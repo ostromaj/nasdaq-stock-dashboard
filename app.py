@@ -612,27 +612,93 @@ def make_trade_plan_chart(ticker: str, data: pd.DataFrame, metrics: pd.Series):
     data = data.copy().tail(90)
 
     fig = go.Figure()
-    fig.add_trace(go.Scatter(x=data.index, y=data["Close"], mode="lines", name="Close"))
 
-    for label, price in [
-        ("Entry Low", metrics["Suggested Entry Low"]),
-        ("Entry High", metrics["Suggested Entry High"]),
-        ("Stop Loss", metrics["Stop Loss"]),
-        ("Target 1", metrics["Target 1"]),
-        ("Target 2", metrics["Target 2"]),
-    ]:
+    fig.add_trace(
+        go.Scatter(
+            x=data.index,
+            y=data["Close"],
+            mode="lines",
+            name="Recent Closing Price",
+            line=dict(width=3),
+        )
+    )
+
+    levels = [
+        {
+            "label": "ENTRY ZONE LOW",
+            "price": metrics["Suggested Entry Low"],
+            "description": "Lower end of preferred buy zone",
+            "dash": "dot",
+            "color": "#00cc96",
+        },
+        {
+            "label": "ENTRY ZONE HIGH",
+            "price": metrics["Suggested Entry High"],
+            "description": "Upper end of preferred buy zone",
+            "dash": "dot",
+            "color": "#00cc96",
+        },
+        {
+            "label": "STOP LOSS",
+            "price": metrics["Stop Loss"],
+            "description": "Exit here if trade breaks down",
+            "dash": "dash",
+            "color": "#ef553b",
+        },
+        {
+            "label": "TARGET 1",
+            "price": metrics["Target 1"],
+            "description": "First profit-taking area",
+            "dash": "dash",
+            "color": "#ffa15a",
+        },
+        {
+            "label": "TARGET 2",
+            "price": metrics["Target 2"],
+            "description": "Stretch profit target",
+            "dash": "dash",
+            "color": "#ab63fa",
+        },
+    ]
+
+    for level in levels:
         fig.add_hline(
-            y=price,
-            line_dash="dash",
-            annotation_text=f"{label}: ${price:.2f}",
+            y=level["price"],
+            line_dash=level["dash"],
+            line_color=level["color"],
+            line_width=2,
+            annotation_text=(
+                f"{level['label']} — ${level['price']:.2f}<br>"
+                f"{level['description']}"
+            ),
             annotation_position="right",
+            annotation_font=dict(size=12, color=level["color"]),
         )
 
+    fig.add_hrect(
+        y0=metrics["Suggested Entry Low"],
+        y1=metrics["Suggested Entry High"],
+        fillcolor="#00cc96",
+        opacity=0.12,
+        line_width=0,
+        annotation_text="Preferred Entry Zone",
+        annotation_position="top left",
+    )
+
     fig.update_layout(
-        title=f"{ticker} Entry / Exit Zones",
+        title=f"{ticker} Suggested Trade Plan: Entry Zone, Stop Loss, and Targets",
         template="plotly_dark",
-        height=500,
+        height=600,
         yaxis_title="Price",
+        xaxis_title="Date",
+        margin=dict(l=35, r=190, t=80, b=45),
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,
+            xanchor="left",
+            x=0,
+        ),
     )
 
     return fig
