@@ -10,21 +10,59 @@ from plotly.subplots import make_subplots
 
 try:
     from textblob import TextBlob
-except ImportError:
+except Exception:
     TextBlob = None
 
 try:
     from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
-except ImportError:
+except Exception:
     SentimentIntensityAnalyzer = None
 
 try:
     import requests
-except ImportError:
+except Exception:
     requests = None
 
 
 st.set_page_config(page_title="NASDAQ Bull Score Dashboard", layout="wide")
+
+
+COMPANY_NAMES = {
+    "AAPL": "Apple",
+    "MSFT": "Microsoft",
+    "NVDA": "Nvidia",
+    "AMZN": "Amazon",
+    "META": "Meta Platforms",
+    "GOOGL": "Alphabet Google",
+    "GOOG": "Alphabet Google",
+    "TSLA": "Tesla",
+    "AVGO": "Broadcom",
+    "COST": "Costco",
+    "AMD": "Advanced Micro Devices",
+    "NFLX": "Netflix",
+    "ADBE": "Adobe",
+    "PEP": "PepsiCo",
+    "CSCO": "Cisco",
+    "INTU": "Intuit",
+    "QCOM": "Qualcomm",
+    "TXN": "Texas Instruments",
+    "AMAT": "Applied Materials",
+    "BKNG": "Booking Holdings",
+    "MU": "Micron",
+    "PANW": "Palo Alto Networks",
+    "CRWD": "CrowdStrike",
+    "PYPL": "PayPal",
+    "SBUX": "Starbucks",
+    "LRCX": "Lam Research",
+    "MELI": "MercadoLibre",
+    "MAR": "Marriott",
+    "ABNB": "Airbnb",
+    "MRVL": "Marvell",
+    "DDOG": "Datadog",
+    "SMCI": "Super Micro Computer",
+    "ARM": "Arm Holdings",
+    "DASH": "DoorDash",
+}
 
 
 def get_news_api_key() -> str:
@@ -57,7 +95,6 @@ def clean_yfinance_df(df: pd.DataFrame) -> pd.DataFrame:
         df.columns = df.columns.get_level_values(0)
 
     needed = ["Open", "High", "Low", "Close", "Volume"]
-
     if not all(col in df.columns for col in needed):
         return pd.DataFrame()
 
@@ -105,35 +142,60 @@ def fetch_intraday_data(ticker: str, interval: str) -> pd.DataFrame:
         auto_adjust=False,
         progress=False,
     )
-
     return clean_yfinance_df(df)
 
 
 @st.cache_data(show_spinner=False)
 def fetch_news_headlines(ticker: str, api_key: str) -> List[str]:
-    if requests is None or not api_key:
-        return []
+    if requests is None:
+        return ["ERROR: requests is not installed"]
+
+    if not api_key:
+        return ["ERROR: NEWS_API_KEY missing"]
+
+    company = COMPANY_NAMES.get(ticker, ticker)
+    query = f'("{company}" OR "{ticker}") AND (stock OR shares OR earnings OR analyst OR market OR revenue OR guidance)'
 
     try:
         response = requests.get(
             "https://newsapi.org/v2/everything",
             params={
-                "q": f"{ticker} stock OR {ticker} earnings OR {ticker} shares",
+                "q": query,
                 "language": "en",
                 "sortBy": "publishedAt",
-                "pageSize": 8,
+                "pageSize": 10,
                 "apiKey": api_key,
             },
             timeout=10,
         )
-        response.raise_for_status()
-        articles = response.json().get("articles", [])
-        return [a.get("title", "") for a in articles if a.get("title")][:8]
-    except Exception:
-        return []
+
+        data = response.json()
+
+        if data.get("status") == "error":
+            return [f"NEWS API ERROR: {data.get('message', 'Unknown error')}"]
+
+        articles = data.get("articles", [])
+        headlines = [a.get("title", "") for a in articles if a.get("title")]
+
+        return headlines[:10]
+
+    except Exception as e:
+        return [f"NEWS FETCH ERROR: {e}"]
+
+
+def real_headlines_only(headlines: List[str]) -> List[str]:
+    return [
+        h for h in headlines
+        if h
+        and not h.startswith("ERROR")
+        and not h.startswith("NEWS API ERROR")
+        and not h.startswith("NEWS FETCH ERROR")
+    ]
 
 
 def sentiment_textblob(headlines: List[str]) -> float:
+    headlines = real_headlines_only(headlines)
+
     if not headlines or TextBlob is None:
         return 0.0
 
@@ -149,6 +211,8 @@ def sentiment_textblob(headlines: List[str]) -> float:
 
 
 def sentiment_vader(headlines: List[str]) -> float:
+    headlines = real_headlines_only(headlines)
+
     if not headlines or SentimentIntensityAnalyzer is None:
         return 0.0
 
@@ -165,7 +229,9 @@ def sentiment_vader(headlines: List[str]) -> float:
 
 
 def compute_sentiment(headlines: List[str], method: str) -> float:
-    return sentiment_vader(headlines) if method == "VADER" else sentiment_textblob(headlines)
+    if method == "VADER":
+        return sentiment_vader(headlines)
+    return sentiment_textblob(headlines)
 
 
 def get_data_as_of(df: pd.DataFrame, selected_date) -> pd.DataFrame:
@@ -409,49 +475,35 @@ def calculate_features(
 
 
 def safe_currency(value):
-    return "—" if pd.isna(value) else f"${float(value):.2f}"
+    return "—" if value is None or pd.isna(value) else f"${float(value):.2f}"
 
 
 def safe_percent(value):
-    return "—" if pd.isna(value) else f"{float(value):.2%}"
+    return "—" if value is None or pd.isna(value) else f"{float(value):.2%}"
 
 
 def safe_number(value, digits=1):
-    return "—" if pd.isna(value) else f"{float(value):.{digits}f}"
+    return "—" if value is None or pd.isna(value) else f"{float(value):.{digits}f}"
 
 
 def safe_x(value):
-    return "—" if pd.isna(value) else f"{float(value):.2f}x"
+    return "—" if value is None or pd.isna(value) else f"{float(value):.2f}x"
 
 
 def make_display_table(df: pd.DataFrame, cols: List[str]) -> pd.DataFrame:
     table = df[cols].copy()
 
     currency_cols = [
-        "Last Price",
-        "Projected Next Day Price",
-        "Actual Next Day Close",
-        "Actual Next Day High",
-        "Actual Next Day Low",
-        "Suggested Entry Low",
-        "Suggested Entry High",
-        "Stop Loss",
-        "Target 1",
-        "Target 2",
+        "Last Price", "Projected Next Day Price", "Actual Next Day Close",
+        "Actual Next Day High", "Actual Next Day Low", "Suggested Entry Low",
+        "Suggested Entry High", "Stop Loss", "Target 1", "Target 2"
     ]
 
     percent_cols = [
-        "Projected Next Day Return",
-        "Actual Next Day Return",
-        "5D Return",
-        "20D Return",
-        "60D Return",
-        "Relative Strength vs QQQ",
-        "Volatility 20D",
+        "Projected Next Day Return", "Actual Next Day Return", "5D Return",
+        "20D Return", "60D Return", "Relative Strength vs QQQ", "Volatility 20D"
     ]
 
-    one_decimal_cols = ["Bull Score"]
-    three_decimal_cols = ["Sentiment Raw"]
     x_cols = ["Volume Surge", "Risk/Reward Target 1", "Risk/Reward Target 2"]
 
     for col in currency_cols:
@@ -462,13 +514,11 @@ def make_display_table(df: pd.DataFrame, cols: List[str]) -> pd.DataFrame:
         if col in table.columns:
             table[col] = table[col].apply(safe_percent)
 
-    for col in one_decimal_cols:
-        if col in table.columns:
-            table[col] = table[col].apply(lambda x: safe_number(x, 1))
+    if "Bull Score" in table.columns:
+        table["Bull Score"] = table["Bull Score"].apply(lambda x: safe_number(x, 1))
 
-    for col in three_decimal_cols:
-        if col in table.columns:
-            table[col] = table[col].apply(lambda x: safe_number(x, 3))
+    if "Sentiment Raw" in table.columns:
+        table["Sentiment Raw"] = table["Sentiment Raw"].apply(lambda x: safe_number(x, 3))
 
     for col in x_cols:
         if col in table.columns:
@@ -560,8 +610,8 @@ def make_candlestick_chart(ticker: str, data: pd.DataFrame, interval: str):
 
 def make_trade_plan_chart(ticker: str, data: pd.DataFrame, metrics: pd.Series):
     data = data.copy().tail(90)
-    fig = go.Figure()
 
+    fig = go.Figure()
     fig.add_trace(go.Scatter(x=data.index, y=data["Close"], mode="lines", name="Close"))
 
     for label, price in [
@@ -650,6 +700,8 @@ def main():
     chart_count = st.sidebar.slider("Number of top Bull Score charts", 1, 10, 5)
     breakdown_count = st.sidebar.slider("Number of stocks in stacked Bull Score chart", 5, 20, 10)
 
+    show_news_debug = st.sidebar.checkbox("Show news debug", value=False)
+
     if not comparison_tickers:
         st.warning("Please select at least one stock to scan.")
         return
@@ -677,14 +729,19 @@ def main():
         return
 
     feature_rows = []
+    headlines_by_ticker = {}
 
     with st.spinner("Scoring sentiment and ranking stocks..."):
         for ticker, asof_df in stock_data_asof.items():
             sentiment_raw = 0.0
+            headlines = []
 
             if news_api_key:
                 headlines = fetch_news_headlines(ticker, news_api_key)
+                headlines_by_ticker[ticker] = headlines
                 sentiment_raw = compute_sentiment(headlines, sentiment_method)
+            else:
+                headlines_by_ticker[ticker] = ["ERROR: NEWS_API_KEY missing"]
 
             feature_rows.append(
                 calculate_features(
@@ -805,16 +862,35 @@ def main():
 
     st.subheader(f"{top_stock} Recent News")
 
-    if news_api_key:
-        top_headlines = fetch_news_headlines(top_stock, news_api_key)
+    top_headlines = headlines_by_ticker.get(top_stock, [])
 
-        if top_headlines:
-            for headline in top_headlines:
-                st.write(f"- {headline}")
-        else:
-            st.info("No recent headlines found.")
+    if top_headlines:
+        for headline in top_headlines:
+            st.write(f"- {headline}")
     else:
-        st.warning("NEWS_API_KEY is missing from Streamlit secrets.")
+        st.info("No recent headlines found.")
+
+    if show_news_debug:
+        st.subheader("News Debug")
+        st.write("News API key found:", bool(news_api_key))
+        st.write("VADER installed:", SentimentIntensityAnalyzer is not None)
+        st.write("TextBlob installed:", TextBlob is not None)
+
+        debug_rows = []
+        for ticker in comparison_df.index[:10]:
+            heads = headlines_by_ticker.get(ticker, [])
+            real_heads = real_headlines_only(heads)
+            debug_rows.append(
+                {
+                    "Ticker": ticker,
+                    "Raw Headlines Returned": len(heads),
+                    "Usable Headlines": len(real_heads),
+                    "Sentiment": comparison_df.loc[ticker, "Sentiment Raw"],
+                    "Example Headline": heads[0] if heads else "None",
+                }
+            )
+
+        st.dataframe(pd.DataFrame(debug_rows), use_container_width=True)
 
     st.markdown(
         "---\n"
