@@ -71,6 +71,7 @@ def clean_yfinance_df(df: pd.DataFrame) -> pd.DataFrame:
         df.columns = df.columns.get_level_values(0)
 
     needed = ["Open", "High", "Low", "Close", "Volume"]
+
     if not all(col in df.columns for col in needed):
         return pd.DataFrame()
 
@@ -104,7 +105,12 @@ def fetch_daily_stock_data(ticker: str, start_date, end_date) -> pd.DataFrame:
 
 @st.cache_data(show_spinner=False)
 def fetch_intraday_data(ticker: str, interval: str) -> pd.DataFrame:
-    period_map = {"5m": "5d", "15m": "5d", "30m": "1mo", "60m": "1mo"}
+    period_map = {
+        "5m": "5d",
+        "15m": "5d",
+        "30m": "1mo",
+        "60m": "1mo",
+    }
 
     df = yf.download(
         ticker,
@@ -155,7 +161,10 @@ def fetch_news_headlines(ticker: str, api_key: str) -> List[str]:
 def real_headlines_only(headlines: List[str]) -> List[str]:
     return [
         h for h in headlines
-        if h and not h.startswith("ERROR") and not h.startswith("NEWS API ERROR") and not h.startswith("NEWS FETCH ERROR")
+        if h
+        and not h.startswith("ERROR")
+        and not h.startswith("NEWS API ERROR")
+        and not h.startswith("NEWS FETCH ERROR")
     ]
 
 
@@ -285,7 +294,6 @@ def calculate_trade_plan(df: pd.DataFrame) -> Dict:
 
     entry_zone_low = max(recent_support, latest_close - (0.75 * atr))
     entry_zone_high = latest_close
-
     stop_loss = recent_support - (0.50 * atr)
 
     target_1 = recent_resistance
@@ -499,6 +507,7 @@ def make_stacked_bull_score_chart(comparison_df: pd.DataFrame, top_n: int = 10):
     df = comparison_df.head(top_n).copy().sort_values("Bull Score", ascending=False)
 
     fig = go.Figure()
+
     fig.add_trace(go.Bar(x=df.index, y=df["Momentum Contribution"], name="Momentum", marker_color="#00cc96"))
     fig.add_trace(go.Bar(x=df.index, y=df["Relative Strength Contribution"], name="Relative Strength", marker_color="#636efa"))
     fig.add_trace(go.Bar(x=df.index, y=df["Volume Contribution"], name="Volume", marker_color="#ffa15a"))
@@ -522,11 +531,18 @@ def make_stacked_bull_score_chart(comparison_df: pd.DataFrame, top_n: int = 10):
 
 def make_candlestick_chart(ticker: str, data: pd.DataFrame, interval: str):
     data = data.copy()
+
     data["MA20"] = data["Close"].rolling(20).mean()
     data["MA50"] = data["Close"].rolling(50).mean()
     data["MA200"] = data["Close"].rolling(200).mean()
 
-    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.06, row_heights=[0.75, 0.25])
+    fig = make_subplots(
+        rows=2,
+        cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.06,
+        row_heights=[0.75, 0.25],
+    )
 
     fig.add_trace(
         go.Candlestick(
@@ -557,12 +573,18 @@ def make_candlestick_chart(ticker: str, data: pd.DataFrame, interval: str):
         legend=dict(orientation="h", y=1.075, x=0.01),
     )
 
-    fig.update_xaxes(rangebreaks=[dict(bounds=["sat", "mon"]), dict(bounds=[16, 9.5], pattern="hour")])
+    fig.update_xaxes(
+        rangebreaks=[
+            dict(bounds=["sat", "mon"]),
+            dict(bounds=[16, 9.5], pattern="hour"),
+        ]
+    )
+
     return fig
 
 
-def make_trade_plan_chart(ticker: str, data: pd.DataFrame, metrics: pd.Series):
-    data = data.copy().tail(90)
+def make_trade_plan_chart(ticker: str, data: pd.DataFrame, metrics: pd.Series, days: int = 90):
+    data = data.copy().tail(days)
 
     fig = go.Figure()
 
@@ -572,7 +594,7 @@ def make_trade_plan_chart(ticker: str, data: pd.DataFrame, metrics: pd.Series):
             y=data["Close"],
             mode="lines",
             name="Recent Closing Price",
-            line=dict(width=3),
+            line=dict(width=4),
         )
     )
 
@@ -592,26 +614,26 @@ def make_trade_plan_chart(ticker: str, data: pd.DataFrame, metrics: pd.Series):
             line_width=2,
             annotation_text=f"{label} — ${price:.2f}<br>{desc}",
             annotation_position="right",
-            annotation_font=dict(size=12, color=color),
+            annotation_font=dict(size=13, color=color),
         )
 
     fig.add_hrect(
         y0=metrics["Suggested Entry Low"],
         y1=metrics["Suggested Entry High"],
         fillcolor="#00cc96",
-        opacity=0.12,
+        opacity=0.15,
         line_width=0,
         annotation_text="Preferred Entry Zone",
         annotation_position="top left",
     )
 
     fig.update_layout(
-        title=f"{ticker} Suggested Trade Plan: Entry Zone, Stop Loss, and Targets",
+        title=f"{ticker} Trade Plan — Last {days} Trading Days",
         template="plotly_dark",
-        height=620,
+        height=720,
         yaxis_title="Price",
         xaxis_title="Date",
-        margin=dict(l=35, r=210, t=80, b=45),
+        margin=dict(l=35, r=240, t=85, b=50),
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
     )
 
@@ -628,7 +650,14 @@ def make_volume_profile_chart(ticker: str, data: pd.DataFrame):
     profile = df.groupby("Price Bin", observed=False)["Volume"].sum().reset_index()
     profile["Price"] = profile["Price Bin"].apply(lambda x: x.mid)
 
-    fig = go.Figure(go.Bar(x=profile["Volume"], y=profile["Price"], orientation="h", name="Volume Profile"))
+    fig = go.Figure(
+        go.Bar(
+            x=profile["Volume"],
+            y=profile["Price"],
+            orientation="h",
+            name="Volume Profile",
+        )
+    )
 
     fig.update_layout(
         title=f"{ticker} Volume Profile",
@@ -645,20 +674,30 @@ def show_trade_plan_modal(ticker: str, comparison_df: pd.DataFrame, stock_data_a
     metrics = comparison_df.loc[ticker]
     df = stock_data_asof[ticker]
 
-    @st.dialog(f"{ticker} Trade Plan")
+    @st.dialog(f"{ticker} Trade Plan", width="large")
     def trade_plan_popup():
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Bull Score", f"{metrics['Bull Score']:.1f}/100")
-        col2.metric("Entry Zone", f"{safe_currency(metrics['Suggested Entry Low'])} - {safe_currency(metrics['Suggested Entry High'])}")
-        col3.metric("Targets", f"{safe_currency(metrics['Target 1'])} / {safe_currency(metrics['Target 2'])}")
+        col1, col2, col3, col4 = st.columns(4)
 
-        st.plotly_chart(make_trade_plan_chart(ticker, df, metrics), use_container_width=True)
+        col1.metric("Bull Score", f"{metrics['Bull Score']:.1f}/100")
+        col2.metric("Prediction", metrics["Prediction"])
+        col3.metric(
+            "Entry Zone",
+            f"{safe_currency(metrics['Suggested Entry Low'])} - {safe_currency(metrics['Suggested Entry High'])}",
+        )
+        col4.metric(
+            "Targets",
+            f"{safe_currency(metrics['Target 1'])} / {safe_currency(metrics['Target 2'])}",
+        )
+
+        st.plotly_chart(make_trade_plan_chart(ticker, df, metrics, days=10), use_container_width=True)
 
         popup_cols = [
-            "Prediction",
             "Prediction Date",
+            "Prediction",
             "Prediction Result",
             "Last Price",
+            "Projected Next Close",
+            "Projected Next Close Return",
             "Suggested Entry Low",
             "Suggested Entry High",
             "Stop Loss",
@@ -688,18 +727,32 @@ def main():
         max_value=today,
     )
 
+    custom_ticker = st.sidebar.text_input(
+        "Look up any stock",
+        placeholder="Example: PLTR, SOFI, HOOD",
+    ).upper().strip()
+
+    scan_universe = tickers.copy()
+
+    if custom_ticker:
+        scan_universe.insert(0, custom_ticker)
+
     comparison_tickers = st.sidebar.multiselect(
         "Stocks to scan",
-        options=tickers,
-        default=tickers,
+        options=scan_universe,
+        default=scan_universe,
     )
 
     sentiment_method = st.sidebar.selectbox("Sentiment model", ["VADER", "TextBlob"])
 
-    candle_interval = st.sidebar.selectbox("Candlestick interval", ["5m", "15m", "30m", "60m"], index=1)
+    candle_interval = st.sidebar.selectbox(
+        "Candlestick interval",
+        ["5m", "15m", "30m", "60m"],
+        index=1,
+    )
+
     chart_count = st.sidebar.slider("Number of top Bull Score charts", 1, 10, 5)
     breakdown_count = st.sidebar.slider("Number of stocks in stacked Bull Score chart", 5, 20, 10)
-    right_list_count = st.sidebar.slider("Stocks in right-side trade list", 5, 25, 10)
     show_news_debug = st.sidebar.checkbox("Show news debug", value=False)
 
     if not comparison_tickers:
@@ -760,7 +813,7 @@ def main():
     top_metrics = comparison_df.loc[top_stock]
     top_bull_tickers = comparison_df.head(chart_count).index.tolist()
 
-    main_col, right_col = st.columns([3.4, 1.1])
+    main_col, right_col = st.columns([3.7, 0.95])
 
     with main_col:
         st.subheader(f"Highest Bull Score for {selected_date.strftime('%Y-%m-%d')}")
@@ -835,7 +888,7 @@ def main():
             st.line_chart(close_comparison, use_container_width=True)
 
         st.subheader(f"{top_stock} Entry / Exit Plan")
-        st.plotly_chart(make_trade_plan_chart(top_stock, stock_data_asof[top_stock], top_metrics), use_container_width=True)
+        st.plotly_chart(make_trade_plan_chart(top_stock, stock_data_asof[top_stock], top_metrics, days=90), use_container_width=True)
 
         chart_tickers = st.sidebar.multiselect(
             "Candlestick charts shown",
@@ -896,20 +949,36 @@ def main():
             st.dataframe(pd.DataFrame(debug_rows), use_container_width=True)
 
     with right_col:
-        st.subheader("Trade Plans")
-        st.caption("Click a stock to open the entry/exit chart.")
+        st.subheader("Top 5 Today")
+        st.caption("Click to view trade plan.")
 
-        side_df = comparison_df.head(right_list_count)
+        top_5 = comparison_df.head(5)
 
-        for ticker, row in side_df.iterrows():
+        medals = ["🥇", "🥈", "🥉", "4.", "5."]
+
+        for idx, (ticker, row) in enumerate(top_5.iterrows()):
+            label = medals[idx]
+
             with st.container(border=True):
-                st.markdown(f"**{ticker}**")
-                st.write(f"Bull Score: **{row['Bull Score']:.1f}**")
-                st.write(f"Entry: {safe_currency(row['Suggested Entry Low'])} - {safe_currency(row['Suggested Entry High'])}")
-                st.write(f"Targets: {safe_currency(row['Target 1'])} / {safe_currency(row['Target 2'])}")
+                st.markdown(f"### {label} {ticker}")
+                st.write(f"**Bull:** {row['Bull Score']:.1f}")
+                st.write(f"**{row['Prediction']}**")
 
-                if st.button("Open trade plan", key=f"open_trade_plan_{ticker}"):
+                if st.button("View", key=f"open_trade_plan_{ticker}"):
                     show_trade_plan_modal(ticker, comparison_df, stock_data_asof)
+
+        if custom_ticker and custom_ticker in comparison_df.index:
+            st.divider()
+            st.subheader("Lookup")
+            row = comparison_df.loc[custom_ticker]
+
+            with st.container(border=True):
+                st.markdown(f"### {custom_ticker}")
+                st.write(f"**Bull:** {row['Bull Score']:.1f}")
+                st.write(f"**{row['Prediction']}**")
+
+                if st.button("View lookup", key=f"open_lookup_{custom_ticker}"):
+                    show_trade_plan_modal(custom_ticker, comparison_df, stock_data_asof)
 
     st.markdown(
         "---\n"
