@@ -1,6 +1,6 @@
 import os
 from datetime import datetime, timedelta
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import pandas as pd
 import streamlit as st
@@ -71,7 +71,7 @@ def fetch_daily_stock_data(ticker: str, start_date, end_date) -> pd.DataFrame:
         return pd.DataFrame()
 
     df = df[needed].dropna()
-    df.index = pd.to_datetime(df.index)
+    df.index = pd.to_datetime(df.index).tz_localize(None)
     return df
 
 
@@ -103,7 +103,7 @@ def fetch_intraday_data(ticker: str, interval: str) -> pd.DataFrame:
         return pd.DataFrame()
 
     df = df[needed].dropna()
-    df.index = pd.to_datetime(df.index)
+    df.index = pd.to_datetime(df.index).tz_localize(None)
     return df
 
 
@@ -166,12 +166,99 @@ def compute_sentiment(headlines: List[str], method: str) -> float:
     return sentiment_vader(headlines) if method == "VADER" else sentiment_textblob(headlines)
 
 
-def calculate_features(ticker: str, df: pd.DataFrame, qqq_df: pd.DataFrame, sentiment_raw: float) -> Dict:
+def get_data_as_of(df: pd.DataFrame, selected_date) -> pd.DataFrame:
+    selected_ts = pd.Timestamp(selected_date)
+    return df[df.index <= selected_ts].copy()
+
+
+def get_next_trading_row(full_df: pd.DataFrame, selected_date) -> Optional[pd.Series]:
+    selected_ts = pd.Timestamp(selected_date)
+    future = full_df[full_df.index > selected_ts]
+    if future.empty:
+        return None
+    return future.iloc[0]
+
+
+def get_next_trading_date(full_df: pd.DataFrame, selected_date) -> str:
+    selected_ts = pd.Timestamp(selected_date)
+    future = full_df[full_df.index > selected_ts]
+    if future.empty:
+        next_day = selected_ts + pd.Timedelta(days=1)
+        while next_day.weekday() >= 5:
+            next_day += pd.Timedelta(days=1)
+        return next_day.strftime("%Y-%m-%d")
+    return future.index[0].strftime("%Y-%m-%d")
+
+
+def calculate_atr(df: pd.DataFrame, period: int = 14) -> float:
+    df = df.copy()
+
+    high = df["High"]
+    low = df["Low"]
+    close = df["Close"]
+
+    df["H-L"] = high - low
+    df["H-PC"] = (high - close.shift(1)).abs()
+    df["L-PC"] = (low - close.shift(1)).abs()
+    df["TR"] = df[["H-L", "H-PC", "L-PC"]].max(axis=1)
+    df["ATR"] = df["TR"].rolling(period).mean()
+
+    atr = df["ATR"].iloc[-1]
+
+    if pd.isna(atr) or atr <= 0:
+        atr = (high.tail(period).max() - low.tail(period).min()) / period
+
+    return float(atr) if not pd.isna(atr) else 0.0
+
+
+def calculate_trade_plan(df: pd.DataFrame) -> Dict:
+    df = df.copy()
+
+    latest_close = float(df["Close"].iloc[-1])
+    atr = calculate_atr(df, 14)
+
+    recent_support = float(df["Low"].tail(20).min())
+    recent_resistance = float(df["High"].tail(20).max())
+
+    entry_zone_low = max(recent_support, latest_close - (0.75 * atr))
+    entry_zone_high = latest_close
+
+    stop_loss = recent_support - (0.50 * atr)
+
+    target_1 = recent_resistance
+    target_2 = recent_resistance + atr
+
+    risk = entry_zone_high - stop_loss
+    reward_1 = target_1 - entry_zone_high
+    reward_2 = target_2 - entry_zone_high
+
+    rr_1 = reward_1 / risk if risk > 0 else 0
+    rr_2 = reward_2 / risk if risk > 0 else 0
+
+    return {
+        "Suggested Entry Low": entry_zone_low,
+        "Suggested Entry High": entry_zone_high,
+        "Stop Loss": stop_loss,
+        "Target 1": target_1,
+        "Target 2": target_2,
+        "Risk/Reward Target 1": rr_1,
+        "Risk/Reward Target 2": rr_2,
+        "ATR14": atr,
+    }
+
+
+def calculate_features(
+    ticker: str,
+    df: pd.DataFrame,
+    full_df: pd.DataFrame,
+    qqq_df: pd.DataFrame,
+    selected_date,
+    sentiment_raw: float,
+) -> Dict:
     close = df["Close"]
     volume = df["Volume"]
 
     qqq_return_20d = 0.0
-
     if not qqq_df.empty and len(qqq_df) >= 21:
         qqq_return_20d = (qqq_df["Close"].iloc[-1] / qqq_df["Close"].iloc[-21]) - 1
 
@@ -209,10 +296,69 @@ def calculate_features(ticker: str, df: pd.DataFrame, qqq_df: pd.DataFrame, sent
         + volatility_contribution
     )
 
+    trade_plan = calculate_trade_plan(df)
+
+    latest_close = float(close.iloc[-1])
+    atr_pct = trade_plan["ATR14"] / latest_close if latest_close > 0 else 0
+
+    projected_next_day_return = ((bull_score - 50) / 50) * min(atr_pct, 0.05)
+    projected_next_day_return = max(-0.05, min(0.05, projected_next_day_return))
+    projected_next_day_price = latest_close * (1 + projected_next_day_return)
+
+    if bull_score >= 75:
+        prediction_label = "Strong Bullish"
+    elif bull_score >= 65:
+        prediction_label = "Bullish"
+    elif bull_score >= 55:
+        prediction_label = "Watchlist"
+    elif bull_score >= 45:
+        prediction_label = "Neutral"
+    else:
+        prediction_label = "Avoid"
+
+    next_row = get_next_trading_row(full_df, selected_date)
+    next_trading_date = get_next_trading_date(full_df, selected_date)
+
+    actual_next_day_return = None
+    actual_next_day_close = None
+    actual_next_day_high = None
+    actual_next_day_low = None
+    hit_target_1 = None
+    hit_target_2 = None
+    hit_stop = None
+    prediction_result = "Pending"
+
+    if next_row is not None:
+        actual_next_day_close = float(next_row["Close"])
+        actual_next_day_high = float(next_row["High"])
+        actual_next_day_low = float(next_row["Low"])
+        actual_next_day_return = (actual_next_day_close / latest_close) - 1
+
+        hit_target_1 = actual_next_day_high >= trade_plan["Target 1"]
+        hit_target_2 = actual_next_day_high >= trade_plan["Target 2"]
+        hit_stop = actual_next_day_low <= trade_plan["Stop Loss"]
+
+        if prediction_label in ["Strong Bullish", "Bullish", "Watchlist"]:
+            prediction_result = "Win" if actual_next_day_return > 0 else "Loss"
+        else:
+            prediction_result = "N/A"
+
     return {
         "Ticker": ticker,
+        "Prediction Date": next_trading_date,
+        "Prediction": prediction_label,
         "Bull Score": bull_score,
-        "Last Price": close.iloc[-1],
+        "Projected Next Day Return": projected_next_day_return,
+        "Projected Next Day Price": projected_next_day_price,
+        "Actual Next Day Return": actual_next_day_return,
+        "Actual Next Day Close": actual_next_day_close,
+        "Actual Next Day High": actual_next_day_high,
+        "Actual Next Day Low": actual_next_day_low,
+        "Hit Target 1": hit_target_1,
+        "Hit Target 2": hit_target_2,
+        "Hit Stop": hit_stop,
+        "Prediction Result": prediction_result,
+        "Last Price": latest_close,
         "5D Return": return_5d,
         "20D Return": return_20d,
         "60D Return": return_60d,
@@ -233,6 +379,7 @@ def calculate_features(ticker: str, df: pd.DataFrame, qqq_df: pd.DataFrame, sent
         "Sentiment Label": "Positive" if sentiment_raw > 0.05 else "Negative" if sentiment_raw < -0.05 else "Neutral",
         "Momentum Label": "Strong" if momentum_score >= 70 else "Weak" if momentum_score <= 35 else "Average",
         "Volume Label": "Elevated" if volume_surge_raw >= 1.25 else "Light" if volume_surge_raw <= 0.75 else "Normal",
+        **trade_plan,
     }
 
 
@@ -254,13 +401,7 @@ def make_stacked_bull_score_chart(comparison_df: pd.DataFrame, top_n: int = 10):
         barmode="stack",
         yaxis_title="Bull Score Points",
         xaxis_title="Ticker",
-        legend=dict(
-            orientation="h",
-            yanchor="bottom",
-            y=1.03,
-            xanchor="left",
-            x=0,
-        ),
+        legend=dict(orientation="h", yanchor="bottom", y=1.03, xanchor="left", x=0),
         margin=dict(l=30, r=30, t=90, b=50),
     )
 
@@ -319,14 +460,7 @@ def make_candlestick_chart(ticker: str, data: pd.DataFrame, interval: str):
         template="plotly_dark",
         xaxis_rangeslider_visible=False,
         margin=dict(l=25, r=25, t=125, b=25),
-        legend=dict(
-            orientation="h",
-            yanchor="bottom",
-            y=1.075,
-            xanchor="left",
-            x=0.01,
-            bgcolor="rgba(0,0,0,0)",
-        ),
+        legend=dict(orientation="h", yanchor="bottom", y=1.075, xanchor="left", x=0.01, bgcolor="rgba(0,0,0,0)"),
     )
 
     fig.update_xaxes(
@@ -338,6 +472,47 @@ def make_candlestick_chart(ticker: str, data: pd.DataFrame, interval: str):
 
     fig.update_yaxes(title_text="Price", row=1, col=1)
     fig.update_yaxes(title_text="Volume", row=2, col=1)
+
+    return fig
+
+
+def make_trade_plan_chart(ticker: str, data: pd.DataFrame, metrics: pd.Series):
+    data = data.copy().tail(90)
+
+    fig = go.Figure()
+
+    fig.add_trace(
+        go.Scatter(
+            x=data.index,
+            y=data["Close"],
+            mode="lines",
+            name="Close",
+        )
+    )
+
+    levels = [
+        ("Entry Low", metrics["Suggested Entry Low"]),
+        ("Entry High", metrics["Suggested Entry High"]),
+        ("Stop Loss", metrics["Stop Loss"]),
+        ("Target 1", metrics["Target 1"]),
+        ("Target 2", metrics["Target 2"]),
+    ]
+
+    for label, price in levels:
+        fig.add_hline(
+            y=price,
+            line_dash="dash",
+            annotation_text=f"{label}: ${price:.2f}",
+            annotation_position="right",
+        )
+
+    fig.update_layout(
+        title=f"{ticker} Entry / Exit Zones",
+        template="plotly_dark",
+        height=500,
+        yaxis_title="Price",
+        margin=dict(l=30, r=30, t=70, b=40),
+    )
 
     return fig
 
@@ -379,6 +554,16 @@ def main():
 
     tickers = load_nasdaq_tickers()
     news_api_key = get_news_api_key()
+
+    today = datetime.now().date()
+
+    selected_date = st.sidebar.date_input(
+        "Analysis date",
+        value=today,
+        min_value=today - timedelta(days=365),
+        max_value=today,
+        help="Pick yesterday to review whether the prediction worked. Pick today to make a prediction for the next trading day.",
+    )
 
     comparison_tickers = st.sidebar.multiselect(
         "Stocks to scan",
@@ -422,34 +607,48 @@ def main():
         st.warning("Please select at least one stock to scan.")
         return
 
-    today = datetime.now().date()
-    start_date = today - timedelta(days=365)
-    end_date = today + timedelta(days=1)
+    start_date = selected_date - timedelta(days=430)
+    end_date = today + timedelta(days=10)
 
     with st.spinner("Downloading market data and calculating Bull Scores..."):
-        qqq_df = fetch_daily_stock_data("QQQ", start_date, end_date)
+        qqq_full_df = fetch_daily_stock_data("QQQ", start_date, end_date)
+        qqq_asof_df = get_data_as_of(qqq_full_df, selected_date)
 
-        stock_data = {}
+        stock_data_full = {}
+        stock_data_asof = {}
+
         for ticker in comparison_tickers:
-            df = fetch_daily_stock_data(ticker, start_date, end_date)
-            if not df.empty:
-                stock_data[ticker] = df
+            full_df = fetch_daily_stock_data(ticker, start_date, end_date)
+            asof_df = get_data_as_of(full_df, selected_date)
 
-    if not stock_data:
-        st.error("No usable price data found.")
+            if not full_df.empty and not asof_df.empty and len(asof_df) >= 30:
+                stock_data_full[ticker] = full_df
+                stock_data_asof[ticker] = asof_df
+
+    if not stock_data_asof:
+        st.error("No usable price data found for the selected analysis date.")
         return
 
     feature_rows = []
 
     with st.spinner("Scoring sentiment and ranking stocks..."):
-        for ticker, df in stock_data.items():
+        for ticker, asof_df in stock_data_asof.items():
             sentiment_raw = 0.0
 
             if news_api_key:
                 headlines = fetch_news_headlines(ticker, news_api_key)
                 sentiment_raw = compute_sentiment(headlines, sentiment_method)
 
-            feature_rows.append(calculate_features(ticker, df, qqq_df, sentiment_raw))
+            feature_rows.append(
+                calculate_features(
+                    ticker=ticker,
+                    df=asof_df,
+                    full_df=stock_data_full[ticker],
+                    qqq_df=qqq_asof_df,
+                    selected_date=selected_date,
+                    sentiment_raw=sentiment_raw,
+                )
+            )
 
     comparison_df = (
         pd.DataFrame(feature_rows)
@@ -461,35 +660,62 @@ def main():
     top_metrics = comparison_df.loc[top_stock]
     top_bull_tickers = comparison_df.head(chart_count).index.tolist()
 
-    st.subheader("Highest Bull Score Today")
+    st.subheader(f"Highest Bull Score for {selected_date.strftime('%Y-%m-%d')}")
 
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("Top Stock", top_stock)
     col2.metric("Bull Score", f"{top_metrics['Bull Score']:.1f}/100")
-    col3.metric("20D Return", f"{top_metrics['20D Return']:.2%}")
-    col4.metric("Rel Strength vs QQQ", f"{top_metrics['Relative Strength vs QQQ']:.2%}")
+    col3.metric("Prediction", top_metrics["Prediction"])
+    col4.metric("Prediction Date", top_metrics["Prediction Date"])
 
-    st.subheader("Bull Score Rankings")
+    col5, col6, col7, col8 = st.columns(4)
+    col5.metric("Projected Next Day Price", f"${top_metrics['Projected Next Day Price']:.2f}")
+    col6.metric("Projected Return", f"{top_metrics['Projected Next Day Return']:.2%}")
+    col7.metric("Entry Zone", f"${top_metrics['Suggested Entry Low']:.2f} - ${top_metrics['Suggested Entry High']:.2f}")
+    col8.metric("Target 1 / Target 2", f"${top_metrics['Target 1']:.2f} / ${top_metrics['Target 2']:.2f}")
 
-    display_df = comparison_df[
-        [
-            "Bull Score",
-            "Last Price",
-            "5D Return",
-            "20D Return",
-            "60D Return",
-            "Relative Strength vs QQQ",
-            "Volume Surge",
-            "Sentiment Raw",
-            "Volatility 20D",
-        ]
+    st.subheader("Prediction & Trade Plan Rankings")
+
+    display_cols = [
+        "Prediction Date",
+        "Prediction",
+        "Prediction Result",
+        "Bull Score",
+        "Last Price",
+        "Projected Next Day Price",
+        "Projected Next Day Return",
+        "Actual Next Day Return",
+        "Suggested Entry Low",
+        "Suggested Entry High",
+        "Stop Loss",
+        "Target 1",
+        "Target 2",
+        "Risk/Reward Target 1",
+        "Risk/Reward Target 2",
+        "5D Return",
+        "20D Return",
+        "60D Return",
+        "Relative Strength vs QQQ",
+        "Volume Surge",
+        "Sentiment Raw",
+        "Volatility 20D",
     ]
 
     st.dataframe(
-        display_df.style.format(
+        comparison_df[display_cols].style.format(
             {
                 "Bull Score": "{:.1f}",
                 "Last Price": "${:.2f}",
+                "Projected Next Day Price": "${:.2f}",
+                "Projected Next Day Return": "{:.2%}",
+                "Actual Next Day Return": "{:.2%}",
+                "Suggested Entry Low": "${:.2f}",
+                "Suggested Entry High": "${:.2f}",
+                "Stop Loss": "${:.2f}",
+                "Target 1": "${:.2f}",
+                "Target 2": "${:.2f}",
+                "Risk/Reward Target 1": "{:.2f}x",
+                "Risk/Reward Target 2": "{:.2f}x",
                 "5D Return": "{:.2%}",
                 "20D Return": "{:.2%}",
                 "60D Return": "{:.2%}",
@@ -502,6 +728,14 @@ def main():
         use_container_width=True,
     )
 
+    csv = comparison_df[display_cols].to_csv().encode("utf-8")
+    st.download_button(
+        "Download prediction log CSV",
+        data=csv,
+        file_name=f"bull_score_predictions_{selected_date.strftime('%Y_%m_%d')}.csv",
+        mime="text/csv",
+    )
+
     st.subheader("Stacked Bull Score Breakdown")
     stacked_fig = make_stacked_bull_score_chart(comparison_df, breakdown_count)
     st.plotly_chart(stacked_fig, use_container_width=True)
@@ -509,14 +743,18 @@ def main():
     st.subheader("Close Price Comparison")
     close_comparison = pd.DataFrame(
         {
-            ticker: stock_data[ticker]["Close"]
+            ticker: stock_data_asof[ticker]["Close"]
             for ticker in top_bull_tickers
-            if ticker in stock_data
+            if ticker in stock_data_asof
         }
     )
 
     if not close_comparison.empty:
         st.line_chart(close_comparison, use_container_width=True)
+
+    st.subheader(f"{top_stock} Entry / Exit Plan")
+    trade_plan_fig = make_trade_plan_chart(top_stock, stock_data_asof[top_stock], top_metrics)
+    st.plotly_chart(trade_plan_fig, use_container_width=True)
 
     chart_tickers = st.sidebar.multiselect(
         "Candlestick charts shown",
@@ -562,7 +800,7 @@ def main():
     st.markdown(
         "---\n"
         "**Disclaimer:** This dashboard is for informational and educational purposes only. "
-        "It is not investment advice."
+        "It is not investment advice, and suggested entry/exit zones are model-generated estimates."
     )
 
 
