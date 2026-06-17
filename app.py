@@ -24,7 +24,7 @@ except Exception:
     requests = None
 
 
-st.set_page_config(page_title="NASDAQ Bull Score Dashboard", layout="wide")
+st.set_page_config(page_title="NASDAQ EOD Bull Score Dashboard", layout="wide")
 
 
 COMPANY_NAMES = {
@@ -71,7 +71,6 @@ def clean_yfinance_df(df: pd.DataFrame) -> pd.DataFrame:
         df.columns = df.columns.get_level_values(0)
 
     needed = ["Open", "High", "Low", "Close", "Volume"]
-
     if not all(col in df.columns for col in needed):
         return pd.DataFrame()
 
@@ -175,7 +174,6 @@ def sentiment_textblob(headlines: List[str]) -> float:
         return 0.0
 
     scores = []
-
     for headline in headlines:
         try:
             scores.append(TextBlob(headline).sentiment.polarity)
@@ -207,7 +205,7 @@ def compute_sentiment(headlines: List[str], method: str) -> float:
     return sentiment_vader(headlines) if method == "VADER" else sentiment_textblob(headlines)
 
 
-def get_data_as_of(df: pd.DataFrame, selected_date) -> pd.DataFrame:
+def get_data_before_date(df: pd.DataFrame, selected_date) -> pd.DataFrame:
     if df is None or df.empty:
         return pd.DataFrame()
 
@@ -230,10 +228,10 @@ def get_data_as_of(df: pd.DataFrame, selected_date) -> pd.DataFrame:
     except Exception:
         pass
 
-    return df[df.index <= selected_ts].copy()
+    return df[df.index < selected_ts].copy()
 
 
-def get_next_trading_row(full_df: pd.DataFrame, selected_date) -> Optional[pd.Series]:
+def get_selected_day_row(full_df: pd.DataFrame, selected_date) -> Optional[pd.Series]:
     if full_df is None or full_df.empty:
         return None
 
@@ -244,24 +242,8 @@ def get_next_trading_row(full_df: pd.DataFrame, selected_date) -> Optional[pd.Se
     except Exception:
         pass
 
-    future = full_df[full_df.index > selected_ts]
-    return None if future.empty else future.iloc[0]
-
-
-def get_next_trading_date(full_df: pd.DataFrame, selected_date) -> str:
-    selected_ts = pd.Timestamp(selected_date)
-
-    if full_df is not None and not full_df.empty:
-        future = full_df[full_df.index > selected_ts]
-        if not future.empty:
-            return future.index[0].strftime("%Y-%m-%d")
-
-    next_day = selected_ts + pd.Timedelta(days=1)
-
-    while next_day.weekday() >= 5:
-        next_day += pd.Timedelta(days=1)
-
-    return next_day.strftime("%Y-%m-%d")
+    same_day = full_df[full_df.index.normalize() == selected_ts.normalize()]
+    return None if same_day.empty else same_day.iloc[0]
 
 
 def calculate_atr(df: pd.DataFrame, period: int = 14) -> float:
@@ -317,19 +299,18 @@ def calculate_trade_plan(df: pd.DataFrame) -> Dict:
 
 def calculate_features(
     ticker: str,
-    df: pd.DataFrame,
+    prior_df: pd.DataFrame,
     full_df: pd.DataFrame,
-    qqq_df: pd.DataFrame,
+    qqq_prior_df: pd.DataFrame,
     selected_date,
     sentiment_raw: float,
 ) -> Dict:
-    close = df["Close"]
-    volume = df["Volume"]
+    close = prior_df["Close"]
+    volume = prior_df["Volume"]
 
     qqq_return_20d = 0.0
-
-    if qqq_df is not None and not qqq_df.empty and len(qqq_df) >= 21:
-        qqq_return_20d = (qqq_df["Close"].iloc[-1] / qqq_df["Close"].iloc[-21]) - 1
+    if qqq_prior_df is not None and not qqq_prior_df.empty and len(qqq_prior_df) >= 21:
+        qqq_return_20d = (qqq_prior_df["Close"].iloc[-1] / qqq_prior_df["Close"].iloc[-21]) - 1
 
     return_5d = (close.iloc[-1] / close.iloc[-6]) - 1 if len(close) >= 6 else 0.0
     return_20d = (close.iloc[-1] / close.iloc[-21]) - 1 if len(close) >= 21 else 0.0
@@ -365,13 +346,14 @@ def calculate_features(
         + volatility_contribution
     )
 
-    trade_plan = calculate_trade_plan(df)
-    latest_close = float(close.iloc[-1])
-    atr_pct = trade_plan["ATR14"] / latest_close if latest_close > 0 else 0
+    trade_plan = calculate_trade_plan(prior_df)
 
-    projected_next_close_return = ((bull_score - 50) / 50) * min(atr_pct, 0.05)
-    projected_next_close_return = max(-0.05, min(0.05, projected_next_close_return))
-    projected_next_close = latest_close * (1 + projected_next_close_return)
+    prior_close = float(close.iloc[-1])
+    atr_pct = trade_plan["ATR14"] / prior_close if prior_close > 0 else 0
+
+    projected_eod_return = ((bull_score - 50) / 50) * min(atr_pct, 0.05)
+    projected_eod_return = max(-0.05, min(0.05, projected_eod_return))
+    projected_eod_close = prior_close * (1 + projected_eod_return)
 
     if bull_score >= 75:
         prediction_label = "Strong Bullish"
@@ -384,48 +366,48 @@ def calculate_features(
     else:
         prediction_label = "Avoid"
 
-    next_row = get_next_trading_row(full_df, selected_date)
-    next_trading_date = get_next_trading_date(full_df, selected_date)
+    selected_row = get_selected_day_row(full_df, selected_date)
+    today_date = pd.Timestamp.today().normalize()
+    selected_ts = pd.Timestamp(selected_date).normalize()
 
-    actual_next_close_return = None
-    actual_next_close = None
-    actual_next_high = None
-    actual_next_low = None
+    actual_eod_return = None
+    actual_eod_close = None
+    actual_day_high = None
+    actual_day_low = None
     hit_target_1 = None
     hit_target_2 = None
     hit_stop = None
     prediction_result = "Pending"
 
-    today_date = pd.Timestamp.today().normalize()
+    if selected_row is not None and selected_ts < today_date:
+        actual_eod_close = float(selected_row["Close"])
+        actual_day_high = float(selected_row["High"])
+        actual_day_low = float(selected_row["Low"])
+        actual_eod_return = (actual_eod_close / prior_close) - 1
 
-    if next_row is not None and next_row.name.normalize() < today_date:
-        actual_next_close = float(next_row["Close"])
-        actual_next_high = float(next_row["High"])
-        actual_next_low = float(next_row["Low"])
-        actual_next_close_return = (actual_next_close / latest_close) - 1
-
-        hit_target_1 = actual_next_high >= trade_plan["Target 1"]
-        hit_target_2 = actual_next_high >= trade_plan["Target 2"]
-        hit_stop = actual_next_low <= trade_plan["Stop Loss"]
+        hit_target_1 = actual_day_high >= trade_plan["Target 1"]
+        hit_target_2 = actual_day_high >= trade_plan["Target 2"]
+        hit_stop = actual_day_low <= trade_plan["Stop Loss"]
 
         if prediction_label in ["Strong Bullish", "Bullish", "Watchlist"]:
-            prediction_result = "Win" if actual_next_close_return > 0 else "Loss"
+            prediction_result = "Win" if actual_eod_return > 0 else "Loss"
         else:
             prediction_result = "N/A"
 
     return {
         "Ticker": ticker,
-        "Prediction Date": next_trading_date,
+        "Prediction Date": pd.Timestamp(selected_date).strftime("%Y-%m-%d"),
+        "Prediction Target": "Selected Day End-of-Day Close",
         "Prediction": prediction_label,
         "Prediction Result": prediction_result,
         "Bull Score": bull_score,
-        "Last Price": latest_close,
-        "Projected Next Close": projected_next_close,
-        "Projected Next Close Return": projected_next_close_return,
-        "Actual Next Close Return": actual_next_close_return,
-        "Actual Next Close": actual_next_close,
-        "Actual Next High": actual_next_high,
-        "Actual Next Low": actual_next_low,
+        "Prior Close": prior_close,
+        "Projected EOD Close": projected_eod_close,
+        "Projected EOD Return": projected_eod_return,
+        "Actual EOD Return": actual_eod_return,
+        "Actual EOD Close": actual_eod_close,
+        "Actual Day High": actual_day_high,
+        "Actual Day Low": actual_day_low,
         "Hit Target 1": hit_target_1,
         "Hit Target 2": hit_target_2,
         "Hit Stop": hit_stop,
@@ -470,13 +452,13 @@ def make_display_table(df: pd.DataFrame, cols: List[str]) -> pd.DataFrame:
     table = df[cols].copy()
 
     currency_cols = [
-        "Last Price", "Projected Next Close", "Actual Next Close",
-        "Actual Next High", "Actual Next Low", "Suggested Entry Low",
+        "Prior Close", "Projected EOD Close", "Actual EOD Close",
+        "Actual Day High", "Actual Day Low", "Suggested Entry Low",
         "Suggested Entry High", "Stop Loss", "Target 1", "Target 2"
     ]
 
     percent_cols = [
-        "Projected Next Close Return", "Actual Next Close Return", "5D Return",
+        "Projected EOD Return", "Actual EOD Return", "5D Return",
         "20D Return", "60D Return", "Relative Strength vs QQQ", "Volatility 20D"
     ]
 
@@ -593,7 +575,7 @@ def make_trade_plan_chart(ticker: str, data: pd.DataFrame, metrics: pd.Series, d
             x=data.index,
             y=data["Close"],
             mode="lines",
-            name="Recent Closing Price",
+            name="Prior Closing Price",
             line=dict(width=4),
         )
     )
@@ -604,6 +586,7 @@ def make_trade_plan_chart(ticker: str, data: pd.DataFrame, metrics: pd.Series, d
         ("STOP LOSS", metrics["Stop Loss"], "Exit here if trade breaks down", "dash", "#ef553b"),
         ("TARGET 1", metrics["Target 1"], "First profit-taking area", "dash", "#ffa15a"),
         ("TARGET 2", metrics["Target 2"], "Stretch profit target", "dash", "#ab63fa"),
+        ("PROJECTED EOD CLOSE", metrics["Projected EOD Close"], "Model-projected close for selected day", "solid", "#19d3f3"),
     ]
 
     for label, price, desc, dash, color in levels:
@@ -628,12 +611,12 @@ def make_trade_plan_chart(ticker: str, data: pd.DataFrame, metrics: pd.Series, d
     )
 
     fig.update_layout(
-        title=f"{ticker} Trade Plan — Last {days} Trading Days",
+        title=f"{ticker} EOD Trade Plan — Last {days} Trading Days",
         template="plotly_dark",
         height=720,
         yaxis_title="Price",
         xaxis_title="Date",
-        margin=dict(l=35, r=240, t=85, b=50),
+        margin=dict(l=35, r=250, t=85, b=50),
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
     )
 
@@ -670,34 +653,34 @@ def make_volume_profile_chart(ticker: str, data: pd.DataFrame):
     return fig
 
 
-def show_trade_plan_modal(ticker: str, comparison_df: pd.DataFrame, stock_data_asof: Dict[str, pd.DataFrame]):
+def show_trade_plan_modal(ticker: str, comparison_df: pd.DataFrame, stock_data_prior: Dict[str, pd.DataFrame]):
     metrics = comparison_df.loc[ticker]
-    df = stock_data_asof[ticker]
+    df = stock_data_prior[ticker]
 
-    @st.dialog(f"{ticker} Trade Plan", width="large")
+    @st.dialog(f"{ticker} EOD Trade Plan", width="large")
     def trade_plan_popup():
         col1, col2, col3, col4 = st.columns(4)
 
         col1.metric("Bull Score", f"{metrics['Bull Score']:.1f}/100")
         col2.metric("Prediction", metrics["Prediction"])
-        col3.metric(
+        col3.metric("Projected EOD Close", safe_currency(metrics["Projected EOD Close"]))
+        col4.metric(
             "Entry Zone",
             f"{safe_currency(metrics['Suggested Entry Low'])} - {safe_currency(metrics['Suggested Entry High'])}",
-        )
-        col4.metric(
-            "Targets",
-            f"{safe_currency(metrics['Target 1'])} / {safe_currency(metrics['Target 2'])}",
         )
 
         st.plotly_chart(make_trade_plan_chart(ticker, df, metrics, days=10), use_container_width=True)
 
         popup_cols = [
             "Prediction Date",
+            "Prediction Target",
             "Prediction",
             "Prediction Result",
-            "Last Price",
-            "Projected Next Close",
-            "Projected Next Close Return",
+            "Prior Close",
+            "Projected EOD Close",
+            "Projected EOD Return",
+            "Actual EOD Close",
+            "Actual EOD Return",
             "Suggested Entry Low",
             "Suggested Entry High",
             "Stop Loss",
@@ -713,7 +696,7 @@ def show_trade_plan_modal(ticker: str, comparison_df: pd.DataFrame, stock_data_a
 
 
 def main():
-    st.title("NASDAQ Bull Score Dashboard")
+    st.title("NASDAQ EOD Bull Score Dashboard")
     st.caption(f"Last updated: {datetime.now().strftime('%Y-%m-%d %I:%M %p')}")
 
     tickers = load_nasdaq_tickers()
@@ -721,10 +704,11 @@ def main():
     today = datetime.now().date()
 
     selected_date = st.sidebar.date_input(
-        "Analysis date",
+        "Prediction date",
         value=today,
         min_value=today - timedelta(days=365),
         max_value=today,
+        help="The model predicts the selected day’s end-of-day close using data available before that day.",
     )
 
     custom_ticker = st.sidebar.text_input(
@@ -760,32 +744,32 @@ def main():
         return
 
     start_date = selected_date - timedelta(days=430)
-    end_date = today + timedelta(days=10)
+    end_date = today + timedelta(days=2)
 
-    with st.spinner("Downloading market data and calculating Bull Scores..."):
+    with st.spinner("Downloading market data and calculating EOD Bull Scores..."):
         qqq_full_df = fetch_daily_stock_data("QQQ", start_date, end_date)
-        qqq_asof_df = get_data_as_of(qqq_full_df, selected_date)
+        qqq_prior_df = get_data_before_date(qqq_full_df, selected_date)
 
         stock_data_full = {}
-        stock_data_asof = {}
+        stock_data_prior = {}
 
         for ticker in comparison_tickers:
             full_df = fetch_daily_stock_data(ticker, start_date, end_date)
-            asof_df = get_data_as_of(full_df, selected_date)
+            prior_df = get_data_before_date(full_df, selected_date)
 
-            if not full_df.empty and not asof_df.empty and len(asof_df) >= 30:
+            if not full_df.empty and not prior_df.empty and len(prior_df) >= 30:
                 stock_data_full[ticker] = full_df
-                stock_data_asof[ticker] = asof_df
+                stock_data_prior[ticker] = prior_df
 
-    if not stock_data_asof:
-        st.error("No usable price data found for the selected analysis date.")
+    if not stock_data_prior:
+        st.error("No usable price data found for the selected prediction date.")
         return
 
     feature_rows = []
     headlines_by_ticker = {}
 
     with st.spinner("Scoring sentiment and ranking stocks..."):
-        for ticker, asof_df in stock_data_asof.items():
+        for ticker, prior_df in stock_data_prior.items():
             sentiment_raw = 0.0
             headlines = []
 
@@ -799,9 +783,9 @@ def main():
             feature_rows.append(
                 calculate_features(
                     ticker=ticker,
-                    df=asof_df,
+                    prior_df=prior_df,
                     full_df=stock_data_full[ticker],
-                    qqq_df=qqq_asof_df,
+                    qqq_prior_df=qqq_prior_df,
                     selected_date=selected_date,
                     sentiment_raw=sentiment_raw,
                 )
@@ -816,35 +800,34 @@ def main():
     main_col, right_col = st.columns([3.7, 0.95])
 
     with main_col:
-        st.subheader(f"Highest Bull Score for {selected_date.strftime('%Y-%m-%d')}")
+        st.subheader(f"Highest EOD Bull Score for {selected_date.strftime('%Y-%m-%d')}")
 
         col1, col2, col3, col4 = st.columns(4)
         col1.metric("Top Stock", top_stock)
         col2.metric("Bull Score", f"{top_metrics['Bull Score']:.1f}/100")
         col3.metric("Prediction", top_metrics["Prediction"])
-        col4.metric("Prediction Date", top_metrics["Prediction Date"])
+        col4.metric("Target", "EOD Close")
 
         col5, col6, col7, col8 = st.columns(4)
-        col5.metric("Projected Next Close", safe_currency(top_metrics["Projected Next Close"]))
-        col6.metric("Projected Close Return", safe_percent(top_metrics["Projected Next Close Return"]))
-        col7.metric(
+        col5.metric("Prior Close", safe_currency(top_metrics["Prior Close"]))
+        col6.metric("Projected EOD Close", safe_currency(top_metrics["Projected EOD Close"]))
+        col7.metric("Projected EOD Return", safe_percent(top_metrics["Projected EOD Return"]))
+        col8.metric(
             "Entry Zone",
             f"{safe_currency(top_metrics['Suggested Entry Low'])} - {safe_currency(top_metrics['Suggested Entry High'])}",
-        )
-        col8.metric(
-            "Target 1 / Target 2",
-            f"{safe_currency(top_metrics['Target 1'])} / {safe_currency(top_metrics['Target 2'])}",
         )
 
         display_cols = [
             "Prediction Date",
+            "Prediction Target",
             "Prediction",
             "Prediction Result",
             "Bull Score",
-            "Last Price",
-            "Projected Next Close",
-            "Projected Next Close Return",
-            "Actual Next Close Return",
+            "Prior Close",
+            "Projected EOD Close",
+            "Projected EOD Return",
+            "Actual EOD Close",
+            "Actual EOD Return",
             "Suggested Entry Low",
             "Suggested Entry High",
             "Stop Loss",
@@ -861,14 +844,14 @@ def main():
             "Volatility 20D",
         ]
 
-        st.subheader("Prediction & Trade Plan Rankings")
+        st.subheader("EOD Prediction & Trade Plan Rankings")
         st.dataframe(make_display_table(comparison_df, display_cols), use_container_width=True)
 
         csv = comparison_df[display_cols].to_csv().encode("utf-8")
         st.download_button(
-            "Download prediction log CSV",
+            "Download EOD prediction log CSV",
             data=csv,
-            file_name=f"bull_score_predictions_{selected_date.strftime('%Y_%m_%d')}.csv",
+            file_name=f"eod_bull_score_predictions_{selected_date.strftime('%Y_%m_%d')}.csv",
             mime="text/csv",
         )
 
@@ -878,17 +861,17 @@ def main():
         st.subheader("Close Price Comparison")
         close_comparison = pd.DataFrame(
             {
-                ticker: stock_data_asof[ticker]["Close"]
+                ticker: stock_data_prior[ticker]["Close"]
                 for ticker in top_bull_tickers
-                if ticker in stock_data_asof
+                if ticker in stock_data_prior
             }
         )
 
         if not close_comparison.empty:
             st.line_chart(close_comparison, use_container_width=True)
 
-        st.subheader(f"{top_stock} Entry / Exit Plan")
-        st.plotly_chart(make_trade_plan_chart(top_stock, stock_data_asof[top_stock], top_metrics, days=90), use_container_width=True)
+        st.subheader(f"{top_stock} EOD Entry / Exit Plan")
+        st.plotly_chart(make_trade_plan_chart(top_stock, stock_data_prior[top_stock], top_metrics, days=90), use_container_width=True)
 
         chart_tickers = st.sidebar.multiselect(
             "Candlestick charts shown",
@@ -950,22 +933,19 @@ def main():
 
     with right_col:
         st.subheader("Top 5 Today")
-        st.caption("Click to view trade plan.")
+        st.caption("Click to view EOD trade plan.")
 
         top_5 = comparison_df.head(5)
-
         medals = ["🥇", "🥈", "🥉", "4.", "5."]
 
         for idx, (ticker, row) in enumerate(top_5.iterrows()):
-            label = medals[idx]
-
             with st.container(border=True):
-                st.markdown(f"### {label} {ticker}")
+                st.markdown(f"### {medals[idx]} {ticker}")
                 st.write(f"**Bull:** {row['Bull Score']:.1f}")
                 st.write(f"**{row['Prediction']}**")
 
                 if st.button("View", key=f"open_trade_plan_{ticker}"):
-                    show_trade_plan_modal(ticker, comparison_df, stock_data_asof)
+                    show_trade_plan_modal(ticker, comparison_df, stock_data_prior)
 
         if custom_ticker and custom_ticker in comparison_df.index:
             st.divider()
@@ -978,7 +958,7 @@ def main():
                 st.write(f"**{row['Prediction']}**")
 
                 if st.button("View lookup", key=f"open_lookup_{custom_ticker}"):
-                    show_trade_plan_modal(custom_ticker, comparison_df, stock_data_asof)
+                    show_trade_plan_modal(custom_ticker, comparison_df, stock_data_prior)
 
     st.markdown(
         "---\n"
