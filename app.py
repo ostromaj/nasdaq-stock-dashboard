@@ -45,7 +45,7 @@ def load_nasdaq_tickers() -> List[str]:
         "CHTR", "ROST", "PAYX", "AEP", "KDP", "TEAM", "MRVL", "DDOG", "CPRT", "FAST",
         "ODFL", "EA", "EXC", "VRSK", "KHC", "BKR", "XEL", "GEHC", "CCEP", "FANG",
         "LULU", "ZS", "TTD", "IDXX", "MCHP", "CSGP", "ON", "BIIB", "DXCM", "ANSS",
-        "CDW", "ILMN", "WBD", "GFS", "MDB", "ARM", "SMCI", "DASH", "LIN", "AZN",
+        "CDW", "ILMN", "WBD", "GFS", "MDB", "ARM", "SMCI", "DASH", "LIN", "AZN"
     ]
 
 
@@ -125,7 +125,7 @@ def fetch_news_headlines(ticker: str, api_key: str) -> List[str]:
         response = requests.get(url, params=params, timeout=10)
         response.raise_for_status()
         articles = response.json().get("articles", [])
-        return [article.get("title", "") for article in articles if article.get("title")][:8]
+        return [a.get("title", "") for a in articles if a.get("title")][:8]
     except Exception:
         return []
 
@@ -133,8 +133,7 @@ def fetch_news_headlines(ticker: str, api_key: str) -> List[str]:
 @st.cache_data(show_spinner=False)
 def fetch_analyst_recommendations(ticker: str) -> pd.DataFrame:
     try:
-        t = yf.Ticker(ticker)
-        recs = t.recommendations
+        recs = yf.Ticker(ticker).recommendations
         if recs is None or recs.empty:
             return pd.DataFrame()
         return recs.tail(10)
@@ -173,27 +172,10 @@ def sentiment_vader(headlines: List[str]) -> float:
 
 
 def compute_sentiment(headlines: List[str], method: str) -> float:
-    if method == "VADER":
-        return sentiment_vader(headlines)
-    return sentiment_textblob(headlines)
+    return sentiment_vader(headlines) if method == "VADER" else sentiment_textblob(headlines)
 
 
-def normalize_score(series: pd.Series, higher_is_better: bool = True) -> pd.Series:
-    series = pd.to_numeric(series, errors="coerce").replace([float("inf"), float("-inf")], pd.NA).fillna(0)
-
-    if not higher_is_better:
-        series = -series
-
-    min_val = series.min()
-    max_val = series.max()
-
-    if max_val == min_val:
-        return pd.Series(50, index=series.index)
-
-    return ((series - min_val) / (max_val - min_val)) * 100
-
-
-def calculate_single_stock_features(ticker: str, df: pd.DataFrame, qqq_df: pd.DataFrame, sentiment_raw: float) -> Dict:
+def calculate_features(ticker: str, df: pd.DataFrame, qqq_df: pd.DataFrame, sentiment_raw: float) -> Dict:
     close = df["Close"]
     volume = df["Volume"]
 
@@ -231,6 +213,7 @@ def calculate_single_stock_features(ticker: str, df: pd.DataFrame, qqq_df: pd.Da
 
     return {
         "Ticker": ticker,
+        "Bull Score": bull_score,
         "Last Price": close.iloc[-1],
         "5D Return": return_5d,
         "20D Return": return_20d,
@@ -244,7 +227,6 @@ def calculate_single_stock_features(ticker: str, df: pd.DataFrame, qqq_df: pd.Da
         "Volume Score": volume_score,
         "Sentiment Score": sentiment_score,
         "Volatility Score": volatility_score,
-        "Bull Score": bull_score,
         "Sentiment Label": "Positive" if sentiment_raw > 0.05 else "Negative" if sentiment_raw < -0.05 else "Neutral",
         "Momentum Label": "Strong" if momentum_score >= 70 else "Weak" if momentum_score <= 35 else "Average",
         "Volume Label": "Elevated" if volume_surge_raw >= 1.25 else "Light" if volume_surge_raw <= 0.75 else "Normal",
@@ -253,7 +235,6 @@ def calculate_single_stock_features(ticker: str, df: pd.DataFrame, qqq_df: pd.Da
 
 def make_candlestick_chart(ticker: str, data: pd.DataFrame, interval: str):
     data = data.copy()
-
     data["MA20"] = data["Close"].rolling(20).mean()
     data["MA50"] = data["Close"].rolling(50).mean()
     data["MA200"] = data["Close"].rolling(200).mean()
@@ -262,7 +243,7 @@ def make_candlestick_chart(ticker: str, data: pd.DataFrame, interval: str):
         rows=2,
         cols=1,
         shared_xaxes=True,
-        vertical_spacing=0.05,
+        vertical_spacing=0.06,
         row_heights=[0.75, 0.25],
     )
 
@@ -288,12 +269,7 @@ def make_candlestick_chart(ticker: str, data: pd.DataFrame, interval: str):
     fig.add_trace(go.Scatter(x=data.index, y=data["MA200"], mode="lines", name="200 MA", line=dict(width=2)), row=1, col=1)
 
     fig.add_trace(
-        go.Bar(
-            x=data.index,
-            y=data["Volume"],
-            name="Volume",
-            opacity=0.35,
-        ),
+        go.Bar(x=data.index, y=data["Volume"], name="Volume", opacity=0.35),
         row=2,
         col=1,
     )
@@ -301,20 +277,20 @@ def make_candlestick_chart(ticker: str, data: pd.DataFrame, interval: str):
     fig.update_layout(
         title=dict(
             text=f"{ticker} — {interval} Candlestick Chart",
-            y=0.98,
+            y=0.985,
             x=0.02,
             xanchor="left",
             yanchor="top",
             font=dict(size=22),
         ),
-        height=760,
+        height=780,
         template="plotly_dark",
         xaxis_rangeslider_visible=False,
-        margin=dict(l=25, r=25, t=110, b=25),
+        margin=dict(l=25, r=25, t=125, b=25),
         legend=dict(
             orientation="h",
             yanchor="bottom",
-            y=1.04,
+            y=1.075,
             xanchor="left",
             x=0.01,
             bgcolor="rgba(0,0,0,0)",
@@ -336,7 +312,6 @@ def make_candlestick_chart(ticker: str, data: pd.DataFrame, interval: str):
 
 def make_volume_profile_chart(ticker: str, data: pd.DataFrame):
     df = data.copy()
-
     if df.empty:
         return None
 
@@ -369,24 +344,24 @@ def main():
     st.title("NASDAQ Stock Research Dashboard")
     st.caption(f"Last updated: {datetime.now().strftime('%Y-%m-%d %I:%M %p')}")
 
-    st.write(
-        "Pick one stock to analyze. The dashboard shows bull score, news sentiment, "
-        "relative strength vs QQQ, analyst activity, moving averages, volume profile, "
-        "and intraday candlestick charts."
-    )
-
     tickers = load_nasdaq_tickers()
 
-    selected_ticker = st.sidebar.selectbox(
-        "Choose a stock",
+    main_ticker = st.sidebar.selectbox(
+        "Choose main stock for charts",
         options=tickers,
         index=tickers.index("NVDA") if "NVDA" in tickers else 0,
     )
 
-    sentiment_method = st.sidebar.selectbox(
-        "Sentiment model",
-        ["VADER", "TextBlob"],
+    comparison_tickers = st.sidebar.multiselect(
+        "Compare against other stocks",
+        options=tickers,
+        default=[main_ticker],
     )
+
+    if main_ticker not in comparison_tickers:
+        comparison_tickers.insert(0, main_ticker)
+
+    sentiment_method = st.sidebar.selectbox("Sentiment model", ["VADER", "TextBlob"])
 
     candle_interval = st.sidebar.selectbox(
         "Candlestick interval",
@@ -394,7 +369,7 @@ def main():
         index=1,
     )
 
-    st.sidebar.markdown("### Professional Score Weights")
+    st.sidebar.markdown("### Score Weights")
     st.sidebar.write("Momentum: 40%")
     st.sidebar.write("Relative Strength vs QQQ: 20%")
     st.sidebar.write("Volume Surge: 15%")
@@ -407,101 +382,136 @@ def main():
     start_date = today - timedelta(days=365)
     end_date = today + timedelta(days=1)
 
-    with st.spinner(f"Downloading data for {selected_ticker}..."):
-        stock_df = fetch_daily_stock_data(selected_ticker, start_date, end_date)
+    with st.spinner("Downloading price data..."):
         qqq_df = fetch_daily_stock_data("QQQ", start_date, end_date)
 
-    if stock_df.empty:
-        st.error(f"No usable price data found for {selected_ticker}.")
+        stock_data = {}
+        for ticker in comparison_tickers:
+            df = fetch_daily_stock_data(ticker, start_date, end_date)
+            if not df.empty:
+                stock_data[ticker] = df
+
+    if main_ticker not in stock_data:
+        st.error(f"No usable data found for {main_ticker}.")
         return
 
-    headlines = []
-    sentiment_raw = 0.0
+    feature_rows = []
 
-    if news_api_key:
-        with st.spinner("Fetching news and scoring sentiment..."):
-            headlines = fetch_news_headlines(selected_ticker, news_api_key)
+    for ticker, df in stock_data.items():
+        headlines = []
+        sentiment_raw = 0.0
+
+        if news_api_key:
+            headlines = fetch_news_headlines(ticker, news_api_key)
             sentiment_raw = compute_sentiment(headlines, sentiment_method)
-    else:
-        st.warning("NEWS_API_KEY is missing from Streamlit secrets. Sentiment will be neutral.")
 
-    metrics = calculate_single_stock_features(selected_ticker, stock_df, qqq_df, sentiment_raw)
+        feature_rows.append(calculate_features(ticker, df, qqq_df, sentiment_raw))
+
+    comparison_df = pd.DataFrame(feature_rows).set_index("Ticker").sort_values("Bull Score", ascending=False)
+
+    main_metrics = comparison_df.loc[main_ticker]
 
     col1, col2, col3, col4 = st.columns(4)
-
-    col1.metric("Bull Score", f"{metrics['Bull Score']:.1f}/100")
-    col2.metric("Last Price", f"${metrics['Last Price']:.2f}")
-    col3.metric("20D Return", f"{metrics['20D Return']:.2%}")
-    col4.metric("Rel Strength vs QQQ", f"{metrics['Relative Strength vs QQQ']:.2%}")
+    col1.metric("Bull Score", f"{main_metrics['Bull Score']:.1f}/100")
+    col2.metric("Last Price", f"${main_metrics['Last Price']:.2f}")
+    col3.metric("20D Return", f"{main_metrics['20D Return']:.2%}")
+    col4.metric("Rel Strength vs QQQ", f"{main_metrics['Relative Strength vs QQQ']:.2%}")
 
     col5, col6, col7, col8 = st.columns(4)
+    col5.metric("Momentum", main_metrics["Momentum Label"])
+    col6.metric("Volume", main_metrics["Volume Label"], f"{main_metrics['Volume Surge']:.2f}x")
+    col7.metric("Sentiment", main_metrics["Sentiment Label"], f"{main_metrics['Sentiment Raw']:.3f}")
+    col8.metric("20D Volatility", f"{main_metrics['Volatility 20D']:.2%}")
 
-    col5.metric("Momentum", metrics["Momentum Label"])
-    col6.metric("Volume", metrics["Volume Label"], f"{metrics['Volume Surge']:.2f}x")
-    col7.metric("Sentiment", metrics["Sentiment Label"], f"{metrics['Sentiment Raw']:.3f}")
-    col8.metric("20D Volatility", f"{metrics['Volatility 20D']:.2%}")
+    st.subheader("Stock Comparison")
+    st.dataframe(
+        comparison_df[
+            [
+                "Bull Score",
+                "Last Price",
+                "5D Return",
+                "20D Return",
+                "60D Return",
+                "Relative Strength vs QQQ",
+                "Volume Surge",
+                "Sentiment Raw",
+                "Volatility 20D",
+            ]
+        ].style.format(
+            {
+                "Bull Score": "{:.1f}",
+                "Last Price": "${:.2f}",
+                "5D Return": "{:.2%}",
+                "20D Return": "{:.2%}",
+                "60D Return": "{:.2%}",
+                "Relative Strength vs QQQ": "{:.2%}",
+                "Volume Surge": "{:.2f}x",
+                "Sentiment Raw": "{:.3f}",
+                "Volatility 20D": "{:.2%}",
+            }
+        ),
+        use_container_width=True,
+    )
 
-    st.subheader("Score Breakdown")
+    st.subheader("Comparison Close Price History")
+    close_comparison = pd.DataFrame(
+        {ticker: stock_data[ticker]["Close"] for ticker in comparison_df.index if ticker in stock_data}
+    )
+    st.line_chart(close_comparison, use_container_width=True)
 
+    st.subheader(f"{main_ticker} Score Breakdown")
     score_df = pd.DataFrame(
         {
             "Score": [
-                metrics["Momentum Score"],
-                metrics["Relative Strength Score"],
-                metrics["Volume Score"],
-                metrics["Sentiment Score"],
-                metrics["Volatility Score"],
+                main_metrics["Momentum Score"],
+                main_metrics["Relative Strength Score"],
+                main_metrics["Volume Score"],
+                main_metrics["Sentiment Score"],
+                main_metrics["Volatility Score"],
             ]
         },
-        index=[
-            "Momentum",
-            "Relative Strength",
-            "Volume",
-            "Sentiment",
-            "Volatility",
-        ],
+        index=["Momentum", "Relative Strength", "Volume", "Sentiment", "Volatility"],
     )
-
     st.bar_chart(score_df, use_container_width=True)
 
-    st.subheader(f"{selected_ticker} Recent News")
-
-    if headlines:
-        for headline in headlines:
-            st.write(f"- {headline}")
+    st.subheader(f"{main_ticker} Recent News")
+    if news_api_key:
+        main_headlines = fetch_news_headlines(main_ticker, news_api_key)
+        if main_headlines:
+            for headline in main_headlines:
+                st.write(f"- {headline}")
+        else:
+            st.info("No recent headlines found.")
     else:
-        st.info("No recent headlines found, or News API key is missing.")
+        st.warning("NEWS_API_KEY is missing from Streamlit secrets.")
 
-    st.subheader("Analyst Upgrades / Downgrades")
-
-    recs = fetch_analyst_recommendations(selected_ticker)
+    st.subheader(f"{main_ticker} Analyst Upgrades / Downgrades")
+    recs = fetch_analyst_recommendations(main_ticker)
 
     if not recs.empty:
         st.dataframe(recs, use_container_width=True)
     else:
         st.info("No analyst recommendation data available from Yahoo Finance.")
 
-    st.subheader(f"{selected_ticker} Daily Price History")
-
-    daily_chart_df = stock_df[["Close"]].copy()
+    st.subheader(f"{main_ticker} Daily Price History")
+    daily_chart_df = stock_data[main_ticker][["Close"]].copy()
     daily_chart_df["20 Day MA"] = daily_chart_df["Close"].rolling(20).mean()
     daily_chart_df["50 Day MA"] = daily_chart_df["Close"].rolling(50).mean()
     daily_chart_df["200 Day MA"] = daily_chart_df["Close"].rolling(200).mean()
-
     st.line_chart(daily_chart_df, use_container_width=True)
 
-    st.subheader(f"{selected_ticker} Intraday Candlestick Chart")
+    st.subheader(f"{main_ticker} Intraday Candlestick Chart")
 
     with st.spinner(f"Loading {candle_interval} candlestick chart..."):
-        intraday_df = fetch_intraday_data(selected_ticker, candle_interval)
+        intraday_df = fetch_intraday_data(main_ticker, candle_interval)
 
     if intraday_df.empty:
-        st.warning(f"No {candle_interval} candlestick data available for {selected_ticker}.")
+        st.warning(f"No {candle_interval} candlestick data available for {main_ticker}.")
     else:
-        fig = make_candlestick_chart(selected_ticker, intraday_df, candle_interval)
+        fig = make_candlestick_chart(main_ticker, intraday_df, candle_interval)
         st.plotly_chart(fig, use_container_width=True)
 
-        volume_profile = make_volume_profile_chart(selected_ticker, intraday_df)
+        volume_profile = make_volume_profile_chart(main_ticker, intraday_df)
         if volume_profile:
             st.plotly_chart(volume_profile, use_container_width=True)
 
