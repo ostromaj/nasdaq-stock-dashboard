@@ -200,12 +200,18 @@ def calculate_features(ticker: str, df: pd.DataFrame, qqq_df: pd.DataFrame, sent
     sentiment_score = max(0, min(100, 50 + sentiment_raw * 50))
     volatility_score = max(0, min(100, 100 - volatility_20d * 1000))
 
+    momentum_contribution = 0.40 * momentum_score
+    relative_strength_contribution = 0.20 * relative_strength_score
+    volume_contribution = 0.15 * volume_score
+    sentiment_contribution = 0.15 * sentiment_score
+    volatility_contribution = 0.10 * volatility_score
+
     bull_score = (
-        0.40 * momentum_score
-        + 0.20 * relative_strength_score
-        + 0.15 * volume_score
-        + 0.15 * sentiment_score
-        + 0.10 * volatility_score
+        momentum_contribution
+        + relative_strength_contribution
+        + volume_contribution
+        + sentiment_contribution
+        + volatility_contribution
     )
 
     return {
@@ -224,10 +230,78 @@ def calculate_features(ticker: str, df: pd.DataFrame, qqq_df: pd.DataFrame, sent
         "Volume Score": volume_score,
         "Sentiment Score": sentiment_score,
         "Volatility Score": volatility_score,
+        "Momentum Contribution": momentum_contribution,
+        "Relative Strength Contribution": relative_strength_contribution,
+        "Volume Contribution": volume_contribution,
+        "Sentiment Contribution": sentiment_contribution,
+        "Volatility Contribution": volatility_contribution,
         "Sentiment Label": "Positive" if sentiment_raw > 0.05 else "Negative" if sentiment_raw < -0.05 else "Neutral",
         "Momentum Label": "Strong" if momentum_score >= 70 else "Weak" if momentum_score <= 35 else "Average",
         "Volume Label": "Elevated" if volume_surge_raw >= 1.25 else "Light" if volume_surge_raw <= 0.75 else "Normal",
     }
+
+
+def make_bull_score_breakdown_chart(ticker: str, metrics: pd.Series):
+    breakdown = pd.DataFrame(
+        {
+            "Factor": [
+                "Momentum",
+                "Relative Strength",
+                "Volume",
+                "Sentiment",
+                "Volatility",
+            ],
+            "Raw Score": [
+                metrics["Momentum Score"],
+                metrics["Relative Strength Score"],
+                metrics["Volume Score"],
+                metrics["Sentiment Score"],
+                metrics["Volatility Score"],
+            ],
+            "Contribution": [
+                metrics["Momentum Contribution"],
+                metrics["Relative Strength Contribution"],
+                metrics["Volume Contribution"],
+                metrics["Sentiment Contribution"],
+                metrics["Volatility Contribution"],
+            ],
+            "Color": [
+                "#00cc96",
+                "#636efa",
+                "#ffa15a",
+                "#ab63fa",
+                "#ef553b",
+            ],
+        }
+    )
+
+    breakdown = breakdown.sort_values("Contribution", ascending=False)
+
+    fig = go.Figure()
+
+    fig.add_bar(
+        x=breakdown["Factor"],
+        y=breakdown["Contribution"],
+        marker_color=breakdown["Color"],
+        text=breakdown["Contribution"].round(1),
+        textposition="outside",
+        customdata=breakdown["Raw Score"].round(1),
+        hovertemplate="<b>%{x}</b><br>Weighted contribution: %{y:.1f}<br>Raw factor score: %{customdata:.1f}/100<extra></extra>",
+    )
+
+    fig.update_layout(
+        title=f"{ticker} Bull Score Breakdown — Ordered by Contribution",
+        template="plotly_dark",
+        height=500,
+        yaxis_title="Bull Score Points",
+        xaxis_title="Factor",
+        showlegend=False,
+        margin=dict(l=30, r=30, t=70, b=40),
+    )
+
+    fig.update_yaxes(range=[0, max(40, breakdown["Contribution"].max() * 1.2)])
+
+    return fig
 
 
 def make_candlestick_chart(ticker: str, data: pd.DataFrame, interval: str):
@@ -457,6 +531,10 @@ def main():
 
     st.subheader("Bull Score Comparison")
     st.bar_chart(comparison_df.head(20)[["Bull Score"]], use_container_width=True)
+
+    st.subheader(f"{top_stock} Bull Score Breakdown")
+    breakdown_fig = make_bull_score_breakdown_chart(top_stock, top_metrics)
+    st.plotly_chart(breakdown_fig, use_container_width=True)
 
     st.subheader("Close Price Comparison")
     close_comparison = pd.DataFrame(
