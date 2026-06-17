@@ -28,40 +28,16 @@ st.set_page_config(page_title="NASDAQ Bull Score Dashboard", layout="wide")
 
 
 COMPANY_NAMES = {
-    "AAPL": "Apple",
-    "MSFT": "Microsoft",
-    "NVDA": "Nvidia",
-    "AMZN": "Amazon",
-    "META": "Meta Platforms",
-    "GOOGL": "Alphabet Google",
-    "GOOG": "Alphabet Google",
-    "TSLA": "Tesla",
-    "AVGO": "Broadcom",
-    "COST": "Costco",
-    "AMD": "Advanced Micro Devices",
-    "NFLX": "Netflix",
-    "ADBE": "Adobe",
-    "PEP": "PepsiCo",
-    "CSCO": "Cisco",
-    "INTU": "Intuit",
-    "QCOM": "Qualcomm",
-    "TXN": "Texas Instruments",
-    "AMAT": "Applied Materials",
-    "BKNG": "Booking Holdings",
-    "MU": "Micron",
-    "PANW": "Palo Alto Networks",
-    "CRWD": "CrowdStrike",
-    "PYPL": "PayPal",
-    "SBUX": "Starbucks",
-    "LRCX": "Lam Research",
-    "MELI": "MercadoLibre",
-    "MAR": "Marriott",
-    "ABNB": "Airbnb",
-    "MRVL": "Marvell",
-    "DDOG": "Datadog",
-    "SMCI": "Super Micro Computer",
-    "ARM": "Arm Holdings",
-    "DASH": "DoorDash",
+    "AAPL": "Apple", "MSFT": "Microsoft", "NVDA": "Nvidia", "AMZN": "Amazon",
+    "META": "Meta Platforms", "GOOGL": "Alphabet Google", "GOOG": "Alphabet Google",
+    "TSLA": "Tesla", "AVGO": "Broadcom", "COST": "Costco", "AMD": "Advanced Micro Devices",
+    "NFLX": "Netflix", "ADBE": "Adobe", "PEP": "PepsiCo", "CSCO": "Cisco",
+    "INTU": "Intuit", "QCOM": "Qualcomm", "TXN": "Texas Instruments",
+    "AMAT": "Applied Materials", "BKNG": "Booking Holdings", "MU": "Micron",
+    "PANW": "Palo Alto Networks", "CRWD": "CrowdStrike", "PYPL": "PayPal",
+    "SBUX": "Starbucks", "LRCX": "Lam Research", "MELI": "MercadoLibre",
+    "MAR": "Marriott", "ABNB": "Airbnb", "MRVL": "Marvell", "DDOG": "Datadog",
+    "SMCI": "Super Micro Computer", "ARM": "Arm Holdings", "DASH": "DoorDash",
 }
 
 
@@ -128,12 +104,7 @@ def fetch_daily_stock_data(ticker: str, start_date, end_date) -> pd.DataFrame:
 
 @st.cache_data(show_spinner=False)
 def fetch_intraday_data(ticker: str, interval: str) -> pd.DataFrame:
-    period_map = {
-        "5m": "5d",
-        "15m": "5d",
-        "30m": "1mo",
-        "60m": "1mo",
-    }
+    period_map = {"5m": "5d", "15m": "5d", "30m": "1mo", "60m": "1mo"}
 
     df = yf.download(
         ticker,
@@ -175,9 +146,7 @@ def fetch_news_headlines(ticker: str, api_key: str) -> List[str]:
             return [f"NEWS API ERROR: {data.get('message', 'Unknown error')}"]
 
         articles = data.get("articles", [])
-        headlines = [a.get("title", "") for a in articles if a.get("title")]
-
-        return headlines[:10]
+        return [a.get("title", "") for a in articles if a.get("title")][:10]
 
     except Exception as e:
         return [f"NEWS FETCH ERROR: {e}"]
@@ -186,10 +155,7 @@ def fetch_news_headlines(ticker: str, api_key: str) -> List[str]:
 def real_headlines_only(headlines: List[str]) -> List[str]:
     return [
         h for h in headlines
-        if h
-        and not h.startswith("ERROR")
-        and not h.startswith("NEWS API ERROR")
-        and not h.startswith("NEWS FETCH ERROR")
+        if h and not h.startswith("ERROR") and not h.startswith("NEWS API ERROR") and not h.startswith("NEWS FETCH ERROR")
     ]
 
 
@@ -229,9 +195,7 @@ def sentiment_vader(headlines: List[str]) -> float:
 
 
 def compute_sentiment(headlines: List[str], method: str) -> float:
-    if method == "VADER":
-        return sentiment_vader(headlines)
-    return sentiment_textblob(headlines)
+    return sentiment_vader(headlines) if method == "VADER" else sentiment_textblob(headlines)
 
 
 def get_data_as_of(df: pd.DataFrame, selected_date) -> pd.DataFrame:
@@ -321,7 +285,9 @@ def calculate_trade_plan(df: pd.DataFrame) -> Dict:
 
     entry_zone_low = max(recent_support, latest_close - (0.75 * atr))
     entry_zone_high = latest_close
+
     stop_loss = recent_support - (0.50 * atr)
+
     target_1 = recent_resistance
     target_2 = recent_resistance + atr
 
@@ -395,9 +361,9 @@ def calculate_features(
     latest_close = float(close.iloc[-1])
     atr_pct = trade_plan["ATR14"] / latest_close if latest_close > 0 else 0
 
-    projected_next_day_return = ((bull_score - 50) / 50) * min(atr_pct, 0.05)
-    projected_next_day_return = max(-0.05, min(0.05, projected_next_day_return))
-    projected_next_day_price = latest_close * (1 + projected_next_day_return)
+    projected_next_close_return = ((bull_score - 50) / 50) * min(atr_pct, 0.05)
+    projected_next_close_return = max(-0.05, min(0.05, projected_next_close_return))
+    projected_next_close = latest_close * (1 + projected_next_close_return)
 
     if bull_score >= 75:
         prediction_label = "Strong Bullish"
@@ -413,27 +379,29 @@ def calculate_features(
     next_row = get_next_trading_row(full_df, selected_date)
     next_trading_date = get_next_trading_date(full_df, selected_date)
 
-    actual_next_day_return = None
-    actual_next_day_close = None
-    actual_next_day_high = None
-    actual_next_day_low = None
+    actual_next_close_return = None
+    actual_next_close = None
+    actual_next_high = None
+    actual_next_low = None
     hit_target_1 = None
     hit_target_2 = None
     hit_stop = None
     prediction_result = "Pending"
 
-    if next_row is not None:
-        actual_next_day_close = float(next_row["Close"])
-        actual_next_day_high = float(next_row["High"])
-        actual_next_day_low = float(next_row["Low"])
-        actual_next_day_return = (actual_next_day_close / latest_close) - 1
+    today_date = pd.Timestamp.today().normalize()
 
-        hit_target_1 = actual_next_day_high >= trade_plan["Target 1"]
-        hit_target_2 = actual_next_day_high >= trade_plan["Target 2"]
-        hit_stop = actual_next_day_low <= trade_plan["Stop Loss"]
+    if next_row is not None and next_row.name.normalize() < today_date:
+        actual_next_close = float(next_row["Close"])
+        actual_next_high = float(next_row["High"])
+        actual_next_low = float(next_row["Low"])
+        actual_next_close_return = (actual_next_close / latest_close) - 1
+
+        hit_target_1 = actual_next_high >= trade_plan["Target 1"]
+        hit_target_2 = actual_next_high >= trade_plan["Target 2"]
+        hit_stop = actual_next_low <= trade_plan["Stop Loss"]
 
         if prediction_label in ["Strong Bullish", "Bullish", "Watchlist"]:
-            prediction_result = "Win" if actual_next_day_return > 0 else "Loss"
+            prediction_result = "Win" if actual_next_close_return > 0 else "Loss"
         else:
             prediction_result = "N/A"
 
@@ -444,12 +412,12 @@ def calculate_features(
         "Prediction Result": prediction_result,
         "Bull Score": bull_score,
         "Last Price": latest_close,
-        "Projected Next Day Price": projected_next_day_price,
-        "Projected Next Day Return": projected_next_day_return,
-        "Actual Next Day Return": actual_next_day_return,
-        "Actual Next Day Close": actual_next_day_close,
-        "Actual Next Day High": actual_next_day_high,
-        "Actual Next Day Low": actual_next_day_low,
+        "Projected Next Close": projected_next_close,
+        "Projected Next Close Return": projected_next_close_return,
+        "Actual Next Close Return": actual_next_close_return,
+        "Actual Next Close": actual_next_close,
+        "Actual Next High": actual_next_high,
+        "Actual Next Low": actual_next_low,
         "Hit Target 1": hit_target_1,
         "Hit Target 2": hit_target_2,
         "Hit Stop": hit_stop,
@@ -494,13 +462,13 @@ def make_display_table(df: pd.DataFrame, cols: List[str]) -> pd.DataFrame:
     table = df[cols].copy()
 
     currency_cols = [
-        "Last Price", "Projected Next Day Price", "Actual Next Day Close",
-        "Actual Next Day High", "Actual Next Day Low", "Suggested Entry Low",
+        "Last Price", "Projected Next Close", "Actual Next Close",
+        "Actual Next High", "Actual Next Low", "Suggested Entry Low",
         "Suggested Entry High", "Stop Loss", "Target 1", "Target 2"
     ]
 
     percent_cols = [
-        "Projected Next Day Return", "Actual Next Day Return", "5D Return",
+        "Projected Next Close Return", "Actual Next Close Return", "5D Return",
         "20D Return", "60D Return", "Relative Strength vs QQQ", "Volatility 20D"
     ]
 
@@ -531,7 +499,6 @@ def make_stacked_bull_score_chart(comparison_df: pd.DataFrame, top_n: int = 10):
     df = comparison_df.head(top_n).copy().sort_values("Bull Score", ascending=False)
 
     fig = go.Figure()
-
     fig.add_trace(go.Bar(x=df.index, y=df["Momentum Contribution"], name="Momentum", marker_color="#00cc96"))
     fig.add_trace(go.Bar(x=df.index, y=df["Relative Strength Contribution"], name="Relative Strength", marker_color="#636efa"))
     fig.add_trace(go.Bar(x=df.index, y=df["Volume Contribution"], name="Volume", marker_color="#ffa15a"))
@@ -550,24 +517,16 @@ def make_stacked_bull_score_chart(comparison_df: pd.DataFrame, top_n: int = 10):
     )
 
     fig.update_yaxes(range=[0, max(100, df["Bull Score"].max() * 1.15)])
-
     return fig
 
 
 def make_candlestick_chart(ticker: str, data: pd.DataFrame, interval: str):
     data = data.copy()
-
     data["MA20"] = data["Close"].rolling(20).mean()
     data["MA50"] = data["Close"].rolling(50).mean()
     data["MA200"] = data["Close"].rolling(200).mean()
 
-    fig = make_subplots(
-        rows=2,
-        cols=1,
-        shared_xaxes=True,
-        vertical_spacing=0.06,
-        row_heights=[0.75, 0.25],
-    )
+    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.06, row_heights=[0.75, 0.25])
 
     fig.add_trace(
         go.Candlestick(
@@ -598,13 +557,7 @@ def make_candlestick_chart(ticker: str, data: pd.DataFrame, interval: str):
         legend=dict(orientation="h", y=1.075, x=0.01),
     )
 
-    fig.update_xaxes(
-        rangebreaks=[
-            dict(bounds=["sat", "mon"]),
-            dict(bounds=[16, 9.5], pattern="hour"),
-        ]
-    )
-
+    fig.update_xaxes(rangebreaks=[dict(bounds=["sat", "mon"]), dict(bounds=[16, 9.5], pattern="hour")])
     return fig
 
 
@@ -624,55 +577,22 @@ def make_trade_plan_chart(ticker: str, data: pd.DataFrame, metrics: pd.Series):
     )
 
     levels = [
-        {
-            "label": "ENTRY ZONE LOW",
-            "price": metrics["Suggested Entry Low"],
-            "description": "Lower end of preferred buy zone",
-            "dash": "dot",
-            "color": "#00cc96",
-        },
-        {
-            "label": "ENTRY ZONE HIGH",
-            "price": metrics["Suggested Entry High"],
-            "description": "Upper end of preferred buy zone",
-            "dash": "dot",
-            "color": "#00cc96",
-        },
-        {
-            "label": "STOP LOSS",
-            "price": metrics["Stop Loss"],
-            "description": "Exit here if trade breaks down",
-            "dash": "dash",
-            "color": "#ef553b",
-        },
-        {
-            "label": "TARGET 1",
-            "price": metrics["Target 1"],
-            "description": "First profit-taking area",
-            "dash": "dash",
-            "color": "#ffa15a",
-        },
-        {
-            "label": "TARGET 2",
-            "price": metrics["Target 2"],
-            "description": "Stretch profit target",
-            "dash": "dash",
-            "color": "#ab63fa",
-        },
+        ("ENTRY ZONE LOW", metrics["Suggested Entry Low"], "Lower end of preferred buy zone", "dot", "#00cc96"),
+        ("ENTRY ZONE HIGH", metrics["Suggested Entry High"], "Upper end of preferred buy zone", "dot", "#00cc96"),
+        ("STOP LOSS", metrics["Stop Loss"], "Exit here if trade breaks down", "dash", "#ef553b"),
+        ("TARGET 1", metrics["Target 1"], "First profit-taking area", "dash", "#ffa15a"),
+        ("TARGET 2", metrics["Target 2"], "Stretch profit target", "dash", "#ab63fa"),
     ]
 
-    for level in levels:
+    for label, price, desc, dash, color in levels:
         fig.add_hline(
-            y=level["price"],
-            line_dash=level["dash"],
-            line_color=level["color"],
+            y=price,
+            line_dash=dash,
+            line_color=color,
             line_width=2,
-            annotation_text=(
-                f"{level['label']} — ${level['price']:.2f}<br>"
-                f"{level['description']}"
-            ),
+            annotation_text=f"{label} — ${price:.2f}<br>{desc}",
             annotation_position="right",
-            annotation_font=dict(size=12, color=level["color"]),
+            annotation_font=dict(size=12, color=color),
         )
 
     fig.add_hrect(
@@ -688,17 +608,11 @@ def make_trade_plan_chart(ticker: str, data: pd.DataFrame, metrics: pd.Series):
     fig.update_layout(
         title=f"{ticker} Suggested Trade Plan: Entry Zone, Stop Loss, and Targets",
         template="plotly_dark",
-        height=600,
+        height=620,
         yaxis_title="Price",
         xaxis_title="Date",
-        margin=dict(l=35, r=190, t=80, b=45),
-        legend=dict(
-            orientation="h",
-            yanchor="bottom",
-            y=1.02,
-            xanchor="left",
-            x=0,
-        ),
+        margin=dict(l=35, r=210, t=80, b=45),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
     )
 
     return fig
@@ -714,14 +628,7 @@ def make_volume_profile_chart(ticker: str, data: pd.DataFrame):
     profile = df.groupby("Price Bin", observed=False)["Volume"].sum().reset_index()
     profile["Price"] = profile["Price Bin"].apply(lambda x: x.mid)
 
-    fig = go.Figure(
-        go.Bar(
-            x=profile["Volume"],
-            y=profile["Price"],
-            orientation="h",
-            name="Volume Profile",
-        )
-    )
+    fig = go.Figure(go.Bar(x=profile["Volume"], y=profile["Price"], orientation="h", name="Volume Profile"))
 
     fig.update_layout(
         title=f"{ticker} Volume Profile",
@@ -732,6 +639,38 @@ def make_volume_profile_chart(ticker: str, data: pd.DataFrame):
     )
 
     return fig
+
+
+def show_trade_plan_modal(ticker: str, comparison_df: pd.DataFrame, stock_data_asof: Dict[str, pd.DataFrame]):
+    metrics = comparison_df.loc[ticker]
+    df = stock_data_asof[ticker]
+
+    @st.dialog(f"{ticker} Trade Plan")
+    def trade_plan_popup():
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Bull Score", f"{metrics['Bull Score']:.1f}/100")
+        col2.metric("Entry Zone", f"{safe_currency(metrics['Suggested Entry Low'])} - {safe_currency(metrics['Suggested Entry High'])}")
+        col3.metric("Targets", f"{safe_currency(metrics['Target 1'])} / {safe_currency(metrics['Target 2'])}")
+
+        st.plotly_chart(make_trade_plan_chart(ticker, df, metrics), use_container_width=True)
+
+        popup_cols = [
+            "Prediction",
+            "Prediction Date",
+            "Prediction Result",
+            "Last Price",
+            "Suggested Entry Low",
+            "Suggested Entry High",
+            "Stop Loss",
+            "Target 1",
+            "Target 2",
+            "Risk/Reward Target 1",
+            "Risk/Reward Target 2",
+        ]
+
+        st.dataframe(make_display_table(comparison_df.loc[[ticker]], popup_cols), use_container_width=True)
+
+    trade_plan_popup()
 
 
 def main():
@@ -757,15 +696,10 @@ def main():
 
     sentiment_method = st.sidebar.selectbox("Sentiment model", ["VADER", "TextBlob"])
 
-    candle_interval = st.sidebar.selectbox(
-        "Candlestick interval",
-        ["5m", "15m", "30m", "60m"],
-        index=1,
-    )
-
+    candle_interval = st.sidebar.selectbox("Candlestick interval", ["5m", "15m", "30m", "60m"], index=1)
     chart_count = st.sidebar.slider("Number of top Bull Score charts", 1, 10, 5)
     breakdown_count = st.sidebar.slider("Number of stocks in stacked Bull Score chart", 5, 20, 10)
-
+    right_list_count = st.sidebar.slider("Stocks in right-side trade list", 5, 25, 10)
     show_news_debug = st.sidebar.checkbox("Show news debug", value=False)
 
     if not comparison_tickers:
@@ -826,137 +760,156 @@ def main():
     top_metrics = comparison_df.loc[top_stock]
     top_bull_tickers = comparison_df.head(chart_count).index.tolist()
 
-    st.subheader(f"Highest Bull Score for {selected_date.strftime('%Y-%m-%d')}")
+    main_col, right_col = st.columns([3.4, 1.1])
 
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Top Stock", top_stock)
-    col2.metric("Bull Score", f"{top_metrics['Bull Score']:.1f}/100")
-    col3.metric("Prediction", top_metrics["Prediction"])
-    col4.metric("Prediction Date", top_metrics["Prediction Date"])
+    with main_col:
+        st.subheader(f"Highest Bull Score for {selected_date.strftime('%Y-%m-%d')}")
 
-    col5, col6, col7, col8 = st.columns(4)
-    col5.metric("Projected Next Day Price", safe_currency(top_metrics["Projected Next Day Price"]))
-    col6.metric("Projected Return", safe_percent(top_metrics["Projected Next Day Return"]))
-    col7.metric(
-        "Entry Zone",
-        f"{safe_currency(top_metrics['Suggested Entry Low'])} - {safe_currency(top_metrics['Suggested Entry High'])}",
-    )
-    col8.metric(
-        "Target 1 / Target 2",
-        f"{safe_currency(top_metrics['Target 1'])} / {safe_currency(top_metrics['Target 2'])}",
-    )
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("Top Stock", top_stock)
+        col2.metric("Bull Score", f"{top_metrics['Bull Score']:.1f}/100")
+        col3.metric("Prediction", top_metrics["Prediction"])
+        col4.metric("Prediction Date", top_metrics["Prediction Date"])
 
-    display_cols = [
-        "Prediction Date",
-        "Prediction",
-        "Prediction Result",
-        "Bull Score",
-        "Last Price",
-        "Projected Next Day Price",
-        "Projected Next Day Return",
-        "Actual Next Day Return",
-        "Suggested Entry Low",
-        "Suggested Entry High",
-        "Stop Loss",
-        "Target 1",
-        "Target 2",
-        "Risk/Reward Target 1",
-        "Risk/Reward Target 2",
-        "5D Return",
-        "20D Return",
-        "60D Return",
-        "Relative Strength vs QQQ",
-        "Volume Surge",
-        "Sentiment Raw",
-        "Volatility 20D",
-    ]
+        col5, col6, col7, col8 = st.columns(4)
+        col5.metric("Projected Next Close", safe_currency(top_metrics["Projected Next Close"]))
+        col6.metric("Projected Close Return", safe_percent(top_metrics["Projected Next Close Return"]))
+        col7.metric(
+            "Entry Zone",
+            f"{safe_currency(top_metrics['Suggested Entry Low'])} - {safe_currency(top_metrics['Suggested Entry High'])}",
+        )
+        col8.metric(
+            "Target 1 / Target 2",
+            f"{safe_currency(top_metrics['Target 1'])} / {safe_currency(top_metrics['Target 2'])}",
+        )
 
-    st.subheader("Prediction & Trade Plan Rankings")
-    st.dataframe(make_display_table(comparison_df, display_cols), use_container_width=True)
+        display_cols = [
+            "Prediction Date",
+            "Prediction",
+            "Prediction Result",
+            "Bull Score",
+            "Last Price",
+            "Projected Next Close",
+            "Projected Next Close Return",
+            "Actual Next Close Return",
+            "Suggested Entry Low",
+            "Suggested Entry High",
+            "Stop Loss",
+            "Target 1",
+            "Target 2",
+            "Risk/Reward Target 1",
+            "Risk/Reward Target 2",
+            "5D Return",
+            "20D Return",
+            "60D Return",
+            "Relative Strength vs QQQ",
+            "Volume Surge",
+            "Sentiment Raw",
+            "Volatility 20D",
+        ]
 
-    csv = comparison_df[display_cols].to_csv().encode("utf-8")
-    st.download_button(
-        "Download prediction log CSV",
-        data=csv,
-        file_name=f"bull_score_predictions_{selected_date.strftime('%Y_%m_%d')}.csv",
-        mime="text/csv",
-    )
+        st.subheader("Prediction & Trade Plan Rankings")
+        st.dataframe(make_display_table(comparison_df, display_cols), use_container_width=True)
 
-    st.subheader("Stacked Bull Score Breakdown")
-    st.plotly_chart(make_stacked_bull_score_chart(comparison_df, breakdown_count), use_container_width=True)
+        csv = comparison_df[display_cols].to_csv().encode("utf-8")
+        st.download_button(
+            "Download prediction log CSV",
+            data=csv,
+            file_name=f"bull_score_predictions_{selected_date.strftime('%Y_%m_%d')}.csv",
+            mime="text/csv",
+        )
 
-    st.subheader("Close Price Comparison")
-    close_comparison = pd.DataFrame(
-        {
-            ticker: stock_data_asof[ticker]["Close"]
-            for ticker in top_bull_tickers
-            if ticker in stock_data_asof
-        }
-    )
+        st.subheader("Stacked Bull Score Breakdown")
+        st.plotly_chart(make_stacked_bull_score_chart(comparison_df, breakdown_count), use_container_width=True)
 
-    if not close_comparison.empty:
-        st.line_chart(close_comparison, use_container_width=True)
+        st.subheader("Close Price Comparison")
+        close_comparison = pd.DataFrame(
+            {
+                ticker: stock_data_asof[ticker]["Close"]
+                for ticker in top_bull_tickers
+                if ticker in stock_data_asof
+            }
+        )
 
-    st.subheader(f"{top_stock} Entry / Exit Plan")
-    st.plotly_chart(make_trade_plan_chart(top_stock, stock_data_asof[top_stock], top_metrics), use_container_width=True)
+        if not close_comparison.empty:
+            st.line_chart(close_comparison, use_container_width=True)
 
-    chart_tickers = st.sidebar.multiselect(
-        "Candlestick charts shown",
-        options=comparison_df.index.tolist(),
-        default=top_bull_tickers,
-    )
+        st.subheader(f"{top_stock} Entry / Exit Plan")
+        st.plotly_chart(make_trade_plan_chart(top_stock, stock_data_asof[top_stock], top_metrics), use_container_width=True)
 
-    if not chart_tickers:
-        chart_tickers = top_bull_tickers
+        chart_tickers = st.sidebar.multiselect(
+            "Candlestick charts shown",
+            options=comparison_df.index.tolist(),
+            default=top_bull_tickers,
+        )
 
-    st.subheader(f"Top {len(chart_tickers)} Bull Score Candlestick Charts")
+        if not chart_tickers:
+            chart_tickers = top_bull_tickers
 
-    for ticker in chart_tickers:
-        with st.spinner(f"Loading {ticker} {candle_interval} candlestick chart..."):
-            intraday_df = fetch_intraday_data(ticker, candle_interval)
+        st.subheader(f"Top {len(chart_tickers)} Bull Score Candlestick Charts")
 
-        if intraday_df.empty:
-            st.warning(f"No {candle_interval} candlestick data available for {ticker}.")
-            continue
+        for ticker in chart_tickers:
+            with st.spinner(f"Loading {ticker} {candle_interval} candlestick chart..."):
+                intraday_df = fetch_intraday_data(ticker, candle_interval)
 
-        st.plotly_chart(make_candlestick_chart(ticker, intraday_df, candle_interval), use_container_width=True)
+            if intraday_df.empty:
+                st.warning(f"No {candle_interval} candlestick data available for {ticker}.")
+                continue
 
-        with st.expander(f"{ticker} Volume Profile"):
-            volume_profile = make_volume_profile_chart(ticker, intraday_df)
-            if volume_profile:
-                st.plotly_chart(volume_profile, use_container_width=True)
+            st.plotly_chart(make_candlestick_chart(ticker, intraday_df, candle_interval), use_container_width=True)
 
-    st.subheader(f"{top_stock} Recent News")
+            with st.expander(f"{ticker} Volume Profile"):
+                volume_profile = make_volume_profile_chart(ticker, intraday_df)
+                if volume_profile:
+                    st.plotly_chart(volume_profile, use_container_width=True)
 
-    top_headlines = headlines_by_ticker.get(top_stock, [])
+        st.subheader(f"{top_stock} Recent News")
 
-    if top_headlines:
-        for headline in top_headlines:
-            st.write(f"- {headline}")
-    else:
-        st.info("No recent headlines found.")
+        top_headlines = headlines_by_ticker.get(top_stock, [])
 
-    if show_news_debug:
-        st.subheader("News Debug")
-        st.write("News API key found:", bool(news_api_key))
-        st.write("VADER installed:", SentimentIntensityAnalyzer is not None)
-        st.write("TextBlob installed:", TextBlob is not None)
+        if top_headlines:
+            for headline in top_headlines:
+                st.write(f"- {headline}")
+        else:
+            st.info("No recent headlines found.")
 
-        debug_rows = []
-        for ticker in comparison_df.index[:10]:
-            heads = headlines_by_ticker.get(ticker, [])
-            real_heads = real_headlines_only(heads)
-            debug_rows.append(
-                {
-                    "Ticker": ticker,
-                    "Raw Headlines Returned": len(heads),
-                    "Usable Headlines": len(real_heads),
-                    "Sentiment": comparison_df.loc[ticker, "Sentiment Raw"],
-                    "Example Headline": heads[0] if heads else "None",
-                }
-            )
+        if show_news_debug:
+            st.subheader("News Debug")
+            st.write("News API key found:", bool(news_api_key))
+            st.write("VADER installed:", SentimentIntensityAnalyzer is not None)
+            st.write("TextBlob installed:", TextBlob is not None)
 
-        st.dataframe(pd.DataFrame(debug_rows), use_container_width=True)
+            debug_rows = []
+            for ticker in comparison_df.index[:10]:
+                heads = headlines_by_ticker.get(ticker, [])
+                real_heads = real_headlines_only(heads)
+                debug_rows.append(
+                    {
+                        "Ticker": ticker,
+                        "Raw Headlines Returned": len(heads),
+                        "Usable Headlines": len(real_heads),
+                        "Sentiment": comparison_df.loc[ticker, "Sentiment Raw"],
+                        "Example Headline": heads[0] if heads else "None",
+                    }
+                )
+
+            st.dataframe(pd.DataFrame(debug_rows), use_container_width=True)
+
+    with right_col:
+        st.subheader("Trade Plans")
+        st.caption("Click a stock to open the entry/exit chart.")
+
+        side_df = comparison_df.head(right_list_count)
+
+        for ticker, row in side_df.iterrows():
+            with st.container(border=True):
+                st.markdown(f"**{ticker}**")
+                st.write(f"Bull Score: **{row['Bull Score']:.1f}**")
+                st.write(f"Entry: {safe_currency(row['Suggested Entry Low'])} - {safe_currency(row['Suggested Entry High'])}")
+                st.write(f"Targets: {safe_currency(row['Target 1'])} / {safe_currency(row['Target 2'])}")
+
+                if st.button("Open trade plan", key=f"open_trade_plan_{ticker}"):
+                    show_trade_plan_modal(ticker, comparison_df, stock_data_asof)
 
     st.markdown(
         "---\n"
