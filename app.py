@@ -40,10 +40,26 @@ import streamlit as st
 import yfinance as yf
 
 try:
-    from textblob import TextBlob
+    from textblob import TextBlob  # type: ignore
 except ImportError:
     # If textblob isn't available, we'll define a dummy sentiment function.
     TextBlob = None  # type: ignore
+
+# Optional sentiment libraries
+try:
+    # VADER sentiment analysis (lexicon and rule‐based)
+    from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer  # type: ignore
+except ImportError:
+    SentimentIntensityAnalyzer = None  # type: ignore
+
+try:
+    # HuggingFace Transformers for FinBERT
+    from transformers import AutoTokenizer, AutoModelForSequenceClassification  # type: ignore
+    import torch  # type: ignore
+except ImportError:
+    AutoTokenizer = None  # type: ignore
+    AutoModelForSequenceClassification = None  # type: ignore
+    torch = None  # type: ignore
 
 try:
     import requests
@@ -83,12 +99,12 @@ def fetch_price_data(tickers: List[str], start: datetime, end: datetime) -> pd.D
     # tickers are supplied. In that case the first level of the column
     # index is the ticker and the second level is the price field (e.g.
     # 'Open', 'High', 'Low', 'Close', 'Adj Close', etc.). When only one
-    # ticker is supplied, yfinance returns a single‑level DataFrame with
+    # ticker is supplied, yfinance returns a single‐level DataFrame with
     # columns for each field.
     #
     # The previous implementation attempted to handle these two cases by
-    # indexing into `data` with `(ticker, 'Adj Close')` for the multi‑index
-    # case or `data['Adj Close'][ticker]` for the single‑index fallback.
+    # indexing into `data` with `(ticker, 'Adj Close')` for the multi‐index
+    # case or `data['Adj Close'][ticker]` for the single‐index fallback.
     # However, this can fail with a KeyError when the structure of `data`
     # is different than expected. Instead, we explicitly check for a
     # MultiIndex and use `.xs()` to extract the 'Adj Close' rows. For the
@@ -107,7 +123,7 @@ def fetch_price_data(tickers: List[str], start: datetime, end: datetime) -> pd.D
         # receives a consistent DataFrame regardless of the number of
         # tickers.
         if 'Adj Close' in data.columns:
-            # Wrap in DataFrame to preserve two‑dimensional structure
+            # Wrap in DataFrame to preserve two‐dimensional structure
             price_df = pd.DataFrame({tickers[0]: data['Adj Close']})
         elif 'Close' in data.columns:
             price_df = pd.DataFrame({tickers[0]: data['Close']})
@@ -162,10 +178,11 @@ def fetch_news_headlines(ticker: str, date: datetime, api_key: str) -> List[str]
     return headlines[:3]
 
 
-def sentiment_score(headlines: List[str]) -> float:
+def sentiment_score_textblob(headlines: List[str]) -> float:
     """
-    Compute a simple sentiment score from a list of headlines. If TextBlob is
-    unavailable, return 0 (neutral). Otherwise, compute average polarity.
+    Compute a sentiment score using TextBlob. Returns the average polarity of
+    the provided headlines. If TextBlob is unavailable or no headlines are
+    provided, a neutral score of 0.0 is returned.
     """
     if not headlines or TextBlob is None:
         return 0.0
@@ -177,6 +194,90 @@ def sentiment_score(headlines: List[str]) -> float:
         except Exception:
             polarities.append(0.0)
     return sum(polarities) / len(polarities) if polarities else 0.0
+
+
+def sentiment_score_vader(headlines: List[str]) -> float:
+    """
+    Compute a sentiment score using the VADER model. The compound score is
+    returned, averaged across all headlines. If VADER is unavailable or
+    no headlines are provided, a neutral score of 0.0 is returned.
+    """
+    if not headlines or SentimentIntensityAnalyzer is None:
+        return 0.0
+    try:
+        analyzer = SentimentIntensityAnalyzer()
+    except Exception:
+        return 0.0
+    scores = []
+    for headline in headlines:
+        try:
+            polarity = analyzer.polarity_scores(headline)
+            scores.append(polarity.get("compound", 0.0))
+        except Exception:
+            scores.append(0.0)
+    return sum(scores) / len(scores) if scores else 0.0
+
+
+@st.cache_resource(show_spinner=False)
+def load_finbert_model():
+    """
+    Load the FinBERT tokenizer and model. This is cached so that the
+    large model is loaded only once. Returns a tuple of (tokenizer, model)
+    or (None, None) if FinBERT cannot be imported.
+    """
+    if AutoTokenizer is None or AutoModelForSequenceClassification is None or torch is None:
+        return None, None
+    try:
+        tokenizer = AutoTokenizer.from_pretrained("ProsusAI/finbert")
+        model = AutoModelForSequenceClassification.from_pretrained("ProsusAI/finbert")
+        return tokenizer, model
+    except Exception:
+        return None, None
+
+
+def sentiment_score_finbert(headlines: List[str]) -> float:
+    """
+    Compute a sentiment score using the FinBERT model. For each headline
+    FinBERT outputs probabilities for negative, neutral and positive classes.
+    We convert these into a single score by subtracting the negative
+    probability from the positive probability and averaging across all
+    headlines. If FinBERT is unavailable or no headlines are provided,
+    returns 0.0.
+    """
+    if not headlines:
+        return 0.0
+    tokenizer, model = load_finbert_model()
+    if tokenizer is None or model is None:
+        return 0.0
+    model.eval()
+    scores = []
+    for headline in headlines:
+        try:
+            inputs = tokenizer(headline, return_tensors="pt", truncation=True)
+            with torch.no_grad():
+                outputs = model(**inputs)
+            # FinBERT output logits correspond to [negative, neutral, positive]
+            probabilities = torch.nn.functional.softmax(outputs.logits, dim=1)[0]
+            pos = probabilities[2].item()
+            neg = probabilities[0].item()
+            scores.append(pos - neg)
+        except Exception:
+            scores.append(0.0)
+    return sum(scores) / len(scores) if scores else 0.0
+
+
+def compute_sentiment(headlines: List[str], method: str) -> float:
+    """
+    Compute sentiment based on the selected method. Supported methods are
+    'TextBlob', 'VADER', and 'FinBERT'. Defaults to TextBlob when the
+    method is not recognized or required libraries are missing.
+    """
+    if method == "VADER":
+        return sentiment_score_vader(headlines)
+    if method == "FinBERT":
+        return sentiment_score_finbert(headlines)
+    # Default to TextBlob
+    return sentiment_score_textblob(headlines)
 
 
 def rank_stocks(
@@ -238,6 +339,21 @@ def main() -> None:
     weight_sentiment = 1.0 - weight_price
     st.write(f"Weight for news sentiment: {weight_sentiment:.2f}")
 
+    # Allow the user to choose which sentiment analysis model to use.  
+    # TextBlob is the default and requires only the textblob package.  
+    # VADER uses the vaderSentiment package and calculates a compound score.  
+    # FinBERT uses a transformer model fine‑tuned for financial text and requires
+    # the transformers and torch packages.  
+    sentiment_method = st.sidebar.selectbox(
+        "Sentiment analysis model",
+        options=["TextBlob", "VADER", "FinBERT"],
+        format_func=lambda m: m if (m != "FinBERT" or (AutoTokenizer is not None and AutoModelForSequenceClassification is not None and torch is not None)) else f"{m} (unavailable)"
+    )
+    # If FinBERT is selected but not available, notify the user
+    if sentiment_method == "FinBERT" and (AutoTokenizer is None or AutoModelForSequenceClassification is None or torch is None):
+        st.sidebar.warning("FinBERT is not installed. Please install transformers and torch to use this model.")
+        sentiment_method = "TextBlob"
+
     # Load ticker list
     tickers = load_nasdaq_tickers()
     st.sidebar.header("Stock Universe")
@@ -271,7 +387,7 @@ def main() -> None:
         with st.spinner("Fetching news headlines and computing sentiment..."):
             for ticker in selected_tickers:
                 headlines = fetch_news_headlines(ticker, selected_date, news_api_key)
-                sentiments[ticker] = sentiment_score(headlines)
+                sentiments[ticker] = compute_sentiment(headlines, sentiment_method)
     else:
         # Without an API key we assign neutral sentiment to all stocks
         sentiments = {ticker: 0.0 for ticker in selected_tickers}
