@@ -139,10 +139,17 @@ def fetch_price_data(tickers: List[str], start: datetime, end: datetime) -> pd.D
 
 def compute_daily_returns(price_df: pd.DataFrame) -> pd.DataFrame:
     """
-    Compute daily percentage returns from price DataFrame. The return is
-    (today - previous_day) / previous_day.
+    Compute daily percentage returns from a price DataFrame. The return is
+    (today - previous_day) / previous_day. Missing values (e.g., for tickers
+    that do not trade every day) are preserved so that we do not drop all
+    rows when at least one ticker has data. Rows are only dropped if all
+    tickers have missing returns on that date.
     """
-    return price_df.pct_change().dropna()
+    # Calculate percentage change for each ticker
+    returns = price_df.pct_change()
+    # Drop rows where all tickers have NaN (no returns available)
+    returns = returns.dropna(how="all")
+    return returns
 
 
 def fetch_news_headlines(ticker: str, date: datetime, api_key: str) -> List[str]:
@@ -294,8 +301,10 @@ def rank_stocks(
     are normalized between 0 and 1. The DataFrame returned contains
     individual components and the final score.
     """
-    # Extract the last row (most recent date) for returns
-    last_returns = price_returns.iloc[-1]
+    # Extract the last row (most recent date) for returns. If any ticker has
+    # missing return for that date, replace it with 0 so that it doesn't
+    # eliminate the entire row from the analysis.
+    last_returns = price_returns.iloc[-1].fillna(0)
     # Normalize returns and sentiments to [0, 1]
     ret_min, ret_max = last_returns.min(), last_returns.max()
     norm_returns = (last_returns - ret_min) / (ret_max - ret_min) if ret_max != ret_min else last_returns * 0
