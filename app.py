@@ -67,7 +67,6 @@ def fetch_daily_stock_data(ticker: str, start_date, end_date) -> pd.DataFrame:
         df.columns = df.columns.get_level_values(0)
 
     needed = ["Open", "High", "Low", "Close", "Volume"]
-
     if not all(col in df.columns for col in needed):
         return pd.DataFrame()
 
@@ -100,7 +99,6 @@ def fetch_intraday_data(ticker: str, interval: str) -> pd.DataFrame:
         df.columns = df.columns.get_level_values(0)
 
     needed = ["Open", "High", "Low", "Close", "Volume"]
-
     if not all(col in df.columns for col in needed):
         return pd.DataFrame()
 
@@ -165,10 +163,7 @@ def sentiment_vader(headlines: List[str]) -> float:
 
 
 def compute_sentiment(headlines: List[str], method: str) -> float:
-    if method == "VADER":
-        return sentiment_vader(headlines)
-
-    return sentiment_textblob(headlines)
+    return sentiment_vader(headlines) if method == "VADER" else sentiment_textblob(headlines)
 
 
 def calculate_features(ticker: str, df: pd.DataFrame, qqq_df: pd.DataFrame, sentiment_raw: float) -> Dict:
@@ -241,65 +236,35 @@ def calculate_features(ticker: str, df: pd.DataFrame, qqq_df: pd.DataFrame, sent
     }
 
 
-def make_bull_score_breakdown_chart(ticker: str, metrics: pd.Series):
-    breakdown = pd.DataFrame(
-        {
-            "Factor": [
-                "Momentum",
-                "Relative Strength",
-                "Volume",
-                "Sentiment",
-                "Volatility",
-            ],
-            "Raw Score": [
-                metrics["Momentum Score"],
-                metrics["Relative Strength Score"],
-                metrics["Volume Score"],
-                metrics["Sentiment Score"],
-                metrics["Volatility Score"],
-            ],
-            "Contribution": [
-                metrics["Momentum Contribution"],
-                metrics["Relative Strength Contribution"],
-                metrics["Volume Contribution"],
-                metrics["Sentiment Contribution"],
-                metrics["Volatility Contribution"],
-            ],
-            "Color": [
-                "#00cc96",
-                "#636efa",
-                "#ffa15a",
-                "#ab63fa",
-                "#ef553b",
-            ],
-        }
-    )
-
-    breakdown = breakdown.sort_values("Contribution", ascending=False)
+def make_stacked_bull_score_chart(comparison_df: pd.DataFrame, top_n: int = 10):
+    df = comparison_df.head(top_n).copy().sort_values("Bull Score", ascending=False)
 
     fig = go.Figure()
 
-    fig.add_bar(
-        x=breakdown["Factor"],
-        y=breakdown["Contribution"],
-        marker_color=breakdown["Color"],
-        text=breakdown["Contribution"].round(1),
-        textposition="outside",
-        customdata=breakdown["Raw Score"].round(1),
-        hovertemplate="<b>%{x}</b><br>Weighted contribution: %{y:.1f}<br>Raw factor score: %{customdata:.1f}/100<extra></extra>",
-    )
+    fig.add_trace(go.Bar(x=df.index, y=df["Momentum Contribution"], name="Momentum", marker_color="#00cc96"))
+    fig.add_trace(go.Bar(x=df.index, y=df["Relative Strength Contribution"], name="Relative Strength", marker_color="#636efa"))
+    fig.add_trace(go.Bar(x=df.index, y=df["Volume Contribution"], name="Volume", marker_color="#ffa15a"))
+    fig.add_trace(go.Bar(x=df.index, y=df["Sentiment Contribution"], name="Sentiment", marker_color="#ab63fa"))
+    fig.add_trace(go.Bar(x=df.index, y=df["Volatility Contribution"], name="Volatility", marker_color="#ef553b"))
 
     fig.update_layout(
-        title=f"{ticker} Bull Score Breakdown — Ordered by Contribution",
+        title=f"Top {len(df)} Bull Score Breakdown — Stacked Contributions",
         template="plotly_dark",
-        height=500,
+        height=650,
+        barmode="stack",
         yaxis_title="Bull Score Points",
-        xaxis_title="Factor",
-        showlegend=False,
-        margin=dict(l=30, r=30, t=70, b=40),
+        xaxis_title="Ticker",
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.03,
+            xanchor="left",
+            x=0,
+        ),
+        margin=dict(l=30, r=30, t=90, b=50),
     )
 
-    fig.update_yaxes(range=[0, max(40, breakdown["Contribution"].max() * 1.2)])
+    fig.update_yaxes(range=[0, max(100, df["Bull Score"].max() * 1.15)])
 
     return fig
 
@@ -438,6 +403,14 @@ def main():
         step=1,
     )
 
+    breakdown_count = st.sidebar.slider(
+        "Number of stocks in stacked Bull Score chart",
+        min_value=5,
+        max_value=20,
+        value=10,
+        step=1,
+    )
+
     st.sidebar.markdown("### Score Weights")
     st.sidebar.write("Momentum: 40%")
     st.sidebar.write("Relative Strength vs QQQ: 20%")
@@ -529,12 +502,9 @@ def main():
         use_container_width=True,
     )
 
-    st.subheader("Bull Score Comparison")
-    st.bar_chart(comparison_df.head(20)[["Bull Score"]], use_container_width=True)
-
-    st.subheader(f"{top_stock} Bull Score Breakdown")
-    breakdown_fig = make_bull_score_breakdown_chart(top_stock, top_metrics)
-    st.plotly_chart(breakdown_fig, use_container_width=True)
+    st.subheader("Stacked Bull Score Breakdown")
+    stacked_fig = make_stacked_bull_score_chart(comparison_df, breakdown_count)
+    st.plotly_chart(stacked_fig, use_container_width=True)
 
     st.subheader("Close Price Comparison")
     close_comparison = pd.DataFrame(
