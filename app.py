@@ -79,15 +79,45 @@ def fetch_price_data(tickers: List[str], start: datetime, end: datetime) -> pd.D
         group_by="ticker",
         progress=False
     )
-    # yfinance returns multi-index columns when multiple tickers are supplied.
-    # We'll extract the 'Adj Close' data for each.
-    price_df = pd.DataFrame()
-    for ticker in tickers:
-        if (ticker, 'Adj Close') in data:
-            price_df[ticker] = data[(ticker, 'Adj Close')]
+    # yfinance returns a DataFrame with MultiIndex columns when multiple
+    # tickers are supplied. In that case the first level of the column
+    # index is the ticker and the second level is the price field (e.g.
+    # 'Open', 'High', 'Low', 'Close', 'Adj Close', etc.). When only one
+    # ticker is supplied, yfinance returns a single‑level DataFrame with
+    # columns for each field.
+    #
+    # The previous implementation attempted to handle these two cases by
+    # indexing into `data` with `(ticker, 'Adj Close')` for the multi‑index
+    # case or `data['Adj Close'][ticker]` for the single‑index fallback.
+    # However, this can fail with a KeyError when the structure of `data`
+    # is different than expected. Instead, we explicitly check for a
+    # MultiIndex and use `.xs()` to extract the 'Adj Close' rows. For the
+    # single ticker case we rename the column to the ticker symbol.
+    if isinstance(data.columns, pd.MultiIndex):
+        try:
+            # Extract the 'Adj Close' level for all tickers. This returns
+            # a DataFrame with columns equal to the ticker symbols.
+            price_df = data.xs('Adj Close', level=1, axis=1)
+        except KeyError:
+            # If 'Adj Close' is not present, fall back to 'Close'.
+            price_df = data.xs('Close', level=1, axis=1)
+    else:
+        # Only a single ticker was downloaded. Extract the 'Adj Close'
+        # column and rename it to the ticker symbol so that the caller
+        # receives a consistent DataFrame regardless of the number of
+        # tickers.
+        if 'Adj Close' in data.columns:
+            # Wrap in DataFrame to preserve two‑dimensional structure
+            price_df = pd.DataFrame({tickers[0]: data['Adj Close']})
+        elif 'Close' in data.columns:
+            price_df = pd.DataFrame({tickers[0]: data['Close']})
         else:
-            # If the structure is different, fallback to a single level
-            price_df[ticker] = data['Adj Close'][ticker]  # type: ignore
+            # Unexpected structure. Return empty DataFrame and let
+            # downstream code handle the error gracefully.
+            price_df = pd.DataFrame()
+    # Ensure columns are ordered according to the tickers list. Missing
+    # tickers will be dropped automatically.
+    price_df = price_df[[c for c in tickers if c in price_df.columns]]
     return price_df
 
 
