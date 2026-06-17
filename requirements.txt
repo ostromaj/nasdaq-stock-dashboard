@@ -6,3 +6,4 @@ requests>=2.25
 vaderSentiment>=3.3
 transformers>=4.30
 torch>=2.0
+plotly>=5.20
